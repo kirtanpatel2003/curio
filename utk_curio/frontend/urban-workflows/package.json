@@ -41,6 +41,7 @@
     "reactflow": "^11.11.4",
     "reagraph": "^4.15.24",
     "utk": "file:../utk-workflow/src/utk-ts/dist",
+    "socket.io-client": "^4.7.5",
     "uuid": "^9.0.1",
     "vega-lite": "^5.16.3"
   },

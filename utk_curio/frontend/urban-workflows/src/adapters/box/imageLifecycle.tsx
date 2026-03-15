@@ -86,7 +86,7 @@ export const useImageLifecycle: BoxLifecycleHook = (data, boxState) => {
         setImages(newImages);
         setInteracted(newInteracted);
         boxState.setOutput({ code: 'success', content: data.input });
-        data.outputCallback(data.nodeId, data.input);
+        if (typeof data.outputCallback === 'function') data.outputCallback(data.nodeId, data.input);
       }
 
       dataInputBypass.current = true;
@@ -107,7 +107,7 @@ export const useImageLifecycle: BoxLifecycleHook = (data, boxState) => {
   };
 
   useEffect(() => {
-    data.interactionsCallback(interactions, data.nodeId);
+    if (typeof data.interactionsCallback === 'function') data.interactionsCallback(interactions, data.nodeId);
   }, [interactions]);
 
   const contentComponent = (

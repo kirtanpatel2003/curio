@@ -11,6 +11,7 @@ loader.config({ monaco });
 import './registry';
 
 import FlowProvider from "./providers/FlowProvider";
+import CollaborationProvider from "./providers/CollaborationProvider";
 import TemplateProvider from "./providers/TemplateProvider";
 import UserProvider from "./providers/UserProvider";
 import DialogProvider from "./providers/DialogProvider";
@@ -29,9 +30,11 @@ const App: React.FC = () => {
           <UserProvider>
             <DialogProvider>
               <FlowProvider>
-                <TemplateProvider>
-                  <MainCanvas />
-                </TemplateProvider>
+                <CollaborationProvider>
+                  <TemplateProvider>
+                    <MainCanvas />
+                  </TemplateProvider>
+                </CollaborationProvider>
               </FlowProvider>
             </DialogProvider>
           </UserProvider>

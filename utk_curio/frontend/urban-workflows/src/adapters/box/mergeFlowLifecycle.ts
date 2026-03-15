@@ -21,7 +21,7 @@ export const useMergeFlowLifecycle: BoxLifecycleHook = (data, _boxState) => {
   useEffect(() => {
     const outArr = inputValues.filter(v => v !== undefined);
     if (outArr.length > 0) {
-      data.outputCallback(data.nodeId, { data: outArr, dataType: 'outputs' });
+      if (typeof data.outputCallback === 'function') data.outputCallback(data.nodeId, { data: outArr, dataType: 'outputs' });
     }
   }, [inputValues, data.nodeId, data.outputCallback]);
 

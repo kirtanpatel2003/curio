@@ -9,6 +9,7 @@ import { InputIcon } from './edges/InputIcon';
 import { getNodeDescriptor } from '../registry/nodeRegistry';
 import { useBoxState } from '../hook/useBoxState';
 import { HandleDef } from '../registry/types';
+import { useCollaborationContext } from '../providers/CollaborationProvider';
 import './Box.css';
 import 'bootstrap/dist/css/bootstrap.min.css';
 
@@ -19,6 +20,11 @@ function UniversalBox({ data, isConnectable }: { data: any; isConnectable: boole
   const boxState = useBoxState(data, descriptor.id);
   const lifecycle = adapter.useLifecycle(data, boxState);
   const edges = useEdges();
+
+  const { lockedNodes, myUserId, lockNode, unlockNode } = useCollaborationContext();
+  const lockInfo = lockedNodes[data.nodeId];
+  const isLockedByOther = lockInfo && lockInfo.userId !== myUserId;
+  const isLockedByMe = lockInfo && lockInfo.userId === myUserId;
 
   const sendCode = lifecycle.sendCodeOverride ?? boxState.sendCode;
   const setSendCodeCallback = lifecycle.setSendCodeCallbackOverride ?? boxState.setSendCodeCallback;
@@ -33,8 +39,28 @@ function UniversalBox({ data, isConnectable }: { data: any; isConnectable: boole
 
   const allHandles = [...adapter.handles, ...(lifecycle.dynamicHandles ?? [])];
 
+  const lockBorderStyle: React.CSSProperties = isLockedByOther
+    ? { outline: `3px solid ${lockInfo.color}`, borderRadius: 8 }
+    : isLockedByMe
+    ? { outline: `3px dashed ${lockInfo.color}`, borderRadius: 8 }
+    : {};
+
   return (
-    <>
+    <div
+      style={{ position: 'relative', ...lockBorderStyle }}
+      onFocus={() => { if (!isLockedByOther) lockNode(data.nodeId); }}
+      onBlur={() => { if (isLockedByMe) unlockNode(data.nodeId); }}
+    >
+      {isLockedByOther && (
+        <div style={{
+          position: 'absolute', top: -18, right: 4,
+          background: lockInfo.color, color: '#fff',
+          fontSize: 10, padding: '1px 6px', borderRadius: 4,
+          zIndex: 10, pointerEvents: 'none', whiteSpace: 'nowrap',
+        }}>
+          Editing…
+        </div>
+      )}
       {allHandles.map((h: HandleDef) => {
         const connectable =
           h.isConnectableOverride
@@ -123,7 +149,7 @@ function UniversalBox({ data, isConnectable }: { data: any; isConnectable: boole
 
         {adapter.outputIconType && <OutputIcon type={adapter.outputIconType} />}
       </BoxContainer>
-    </>
+    </div>
   );
 }
 

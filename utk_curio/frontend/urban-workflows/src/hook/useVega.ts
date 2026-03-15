@@ -122,6 +122,21 @@ export const useVega = ({ data, code }: { data: any; code: string; }) => {
     }
   }, [data.input]);
 
+  // Auto-initialize the Vega view when a collaborating user joins and already has
+  // both a compiled grammar (code) and connected data (data.input), but hasn't
+  // manually clicked "Apply" yet (so currentView is still null).
+  useEffect(() => {
+    if (currentView !== null) return;                          // already initialized
+    if (!code || code.trim() === '' || code.trim() === '{}') return; // no grammar
+    const hasInput = data.input && data.input !== '';
+    if (!hasInput) return;                                     // no data connected
+    try {
+      compileGrammar(JSON.parse(code));
+    } catch (_) {
+      // invalid grammar JSON — skip silently
+    }
+  }, [data.input, code]); // eslint-disable-line react-hooks/exhaustive-deps
+
 
   useEffect(() => {
     const ro = new ResizeObserver((entries) => {
@@ -158,6 +173,7 @@ export const useVega = ({ data, code }: { data: any; code: string; }) => {
   }, [interactions]);
 
   useEffect(() => {
+    if (typeof data.interactionsCallback !== 'function') return;
     data.interactionsCallback(interactions, data.nodeId);
   }, [interactions]);
 
@@ -359,7 +375,9 @@ export const useVega = ({ data, code }: { data: any; code: string; }) => {
     }
 
     // replicating input to the output
-    data.outputCallback(data.nodeId, data.input);
+    if (typeof data.outputCallback === 'function') {
+      data.outputCallback(data.nodeId, data.input);
+    }
   };
 
 

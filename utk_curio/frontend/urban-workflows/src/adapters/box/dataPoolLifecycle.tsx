@@ -32,8 +32,8 @@ export const useDataPoolLifecycle: BoxLifecycleHook = (data, boxState) => {
       const { newOutput, propagationObj } = parseOutputData({ output });
       const clonedOutput = JSON.parse(JSON.stringify(newOutput));
       setOutput({ code: 'success', content: clonedOutput });
-      data.outputCallback(data.nodeId, clonedOutput);
-      data.propagationCallback(propagationObj);
+      if (typeof data.outputCallback === 'function') data.outputCallback(data.nodeId, clonedOutput);
+      if (typeof data.propagationCallback === 'function') data.propagationCallback(propagationObj);
     }
   }, [data.interactions]);
 

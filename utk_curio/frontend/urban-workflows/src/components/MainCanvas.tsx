@@ -23,6 +23,7 @@ import { useProvenanceContext } from "../providers/ProvenanceProvider";
 import { buttonStyle } from "./styles";
 import { ToolsMenu, UpMenu } from "components/menus";
 import UniDirectionalEdge from "./edges/UniDirectionalEdge";
+import { useCollaborationContext } from "../providers/CollaborationProvider";
 import "./MainCanvas.css";
 import LLMChat from "./LLMChat";
 import { useLLMContext } from "../providers/LLMProvider";
@@ -283,6 +284,8 @@ export function MainCanvas() {
             </div>
     }
 
+    const { isConnected, connectedUsers, conflicts, dismissConflict } = useCollaborationContext();
+
     return (
         <>
         {!loading ? <div
@@ -291,6 +294,44 @@ export function MainCanvas() {
             onClick={closeFileMenu}
             // onWheelCapture={handleWheel}
         >
+            {/* ── Collaboration status bar ───────────────────────────────── */}
+            <div style={{
+                position: 'fixed', top: 8, right: 12, zIndex: 1000,
+                display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+                <div style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    background: isConnected ? '#2ecc71' : '#e74c3c',
+                }} title={isConnected ? 'Connected' : 'Disconnected'} />
+                {connectedUsers.map((u) => (
+                    <div key={u.userId} title={`User ${u.userId.slice(0, 6)}`} style={{
+                        width: 24, height: 24, borderRadius: '50%',
+                        background: u.color, border: '2px solid #fff',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        color: '#fff', fontSize: 10, fontWeight: 700,
+                    }}>
+                        {u.userId.slice(0, 2).toUpperCase()}
+                    </div>
+                ))}
+            </div>
+
+            {/* ── Conflict banners ───────────────────────────────────────── */}
+            <div style={{ position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {conflicts.map((c) => (
+                    <div key={c.nodeId + c.timestamp} style={{
+                        background: '#e74c3c', color: '#fff', borderRadius: 6,
+                        padding: '8px 14px', display: 'flex', alignItems: 'center', gap: 10,
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.3)', fontSize: 13,
+                    }}>
+                        <span>⚠ Conflict on node — locked by <strong>{c.lockedBy.userId.slice(0, 6)}</strong>, also edited by <strong>{c.requestedBy.userId.slice(0, 6)}</strong></span>
+                        <button onClick={() => dismissConflict(c.nodeId)} style={{
+                            background: 'transparent', border: '1px solid #fff',
+                            color: '#fff', borderRadius: 4, cursor: 'pointer', padding: '2px 8px',
+                        }}>✕</button>
+                    </div>
+                ))}
+            </div>
+
             {Object.keys(floatingBoxes).map((key, index) => (
                 <FloatingBox
                     key={key}

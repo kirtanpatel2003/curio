@@ -52,6 +52,8 @@ export interface IPropagation {
 interface FlowContextProps {
     nodes: Node[];
     edges: Edge[];
+    setNodes: (updater: Node[] | ((prev: Node[]) => Node[])) => void;
+    setEdges: (updater: Edge[] | ((prev: Edge[]) => Edge[])) => void;
     setOutputs: (updateFn: (outputs: IOutput[]) => IOutput[]) => void;
     setInteractions: (updateFn: (interactions: IInteraction[]) => IInteraction[]) => void;
     applyNewPropagation: (propagation: IPropagation) => void;
@@ -97,6 +99,8 @@ interface FlowContextProps {
 export const FlowContext = createContext<FlowContextProps>({
     nodes: [],
     edges: [],
+    setNodes: () => { },
+    setEdges: () => { },
     setOutputs: () => { },
     setInteractions: () => { },
     applyNewPropagation: () => { },
@@ -781,6 +785,8 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
             value={{
                 nodes,
                 edges,
+                setNodes,
+                setEdges,
                 setOutputs,
                 setInteractions,
                 applyNewPropagation,

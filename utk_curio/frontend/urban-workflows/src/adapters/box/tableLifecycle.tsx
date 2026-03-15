@@ -23,7 +23,7 @@ export const useTableLifecycle: BoxLifecycleHook = (data, boxState) => {
       if (data.input != null && data.input !== '') {
         typesInput = getType([data.input]);
         boxState.setOutput({ code: 'success', content: data.input! });
-        data.outputCallback(data.nodeId, data.input);
+        if (typeof data.outputCallback === 'function') data.outputCallback(data.nodeId, data.input);
       }
 
       const typesOutput: string[] = [...typesInput];

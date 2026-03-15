@@ -4,7 +4,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 from utk_curio.backend.config import Config as config_class
-from utk_curio.backend.extensions import db, migrate
+from utk_curio.backend.extensions import db, migrate, socketio
 
 
 def get_locale():
@@ -19,9 +19,12 @@ def create_app(config_class=config_class):
 
     db.init_app(app)
     migrate.init_app(app, db)
+    socketio.init_app(app)
 
     from utk_curio.backend.app.api import bp as api_bp
     app.register_blueprint(api_bp, url_prefix='')
+
+    from utk_curio.backend.app.collaboration import events  # noqa: F401 — registers socket handlers
 
     from utk_curio.backend.app.users import bp as users_bp
     app.register_blueprint(users_bp)

@@ -81,7 +81,7 @@ function CodeEditor({
 
         if (result.stderr == "") {
             // No error in the execution
-            data.outputCallback(data.nodeId, result.output);
+            if (typeof data.outputCallback === 'function') data.outputCallback(data.nodeId, result.output);
         } else {
             setOutputCallback({ code: "error", content: result.stderr });
         }
