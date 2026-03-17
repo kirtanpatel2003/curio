@@ -89,6 +89,9 @@ function dataFingerprint(node: any): string {
     source: d.source,
     defaultCode: d.defaultCode,
     content: d.content,
+    code: d.code,
+    outputCode: d.output?.code,
+    outputContent: d.output?.content,
   });
 }
 
@@ -105,7 +108,7 @@ function getOrCreateUserId(): string {
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 const CollaborationProvider = ({ children }: { children: ReactNode }) => {
-  const { nodes, edges, setNodes, setEdges, workflowNameRef } = useFlowContext();
+  const { nodes, edges, setNodes, setEdges, outputs, setOutputs, workflowNameRef } = useFlowContext();
 
   const socketRef = useRef<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -130,6 +133,16 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
   const remoteNodeUpdates = useRef<Set<string>>(new Set());
   const remoteEdgeAdds = useRef<Set<string>>(new Set());
   const remoteEdgeRemoves = useRef<Set<string>>(new Set());
+  const remoteOutputUpdates = useRef<Set<string>>(new Set());
+
+  // Keep refs so socket handlers can read the latest values
+  const outputsRef = useRef(outputs);
+  useEffect(() => { outputsRef.current = outputs; }, [outputs]);
+  const edgesRef = useRef(edges);
+  useEffect(() => { edgesRef.current = edges; }, [edges]);
+
+  // Track previous output fingerprints to detect local changes
+  const prevOutputFingerprints = useRef<Map<string, string>>(new Map());
 
   const sessionId = workflowNameRef.current || 'default';
 
@@ -150,6 +163,18 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
       setMyColor(data.color);
       setLockedNodes(data.lockedNodes || {});
       setConnectedUsers(data.connectedUsers || []);
+
+      // Populate outputs[] from server-synced outputs
+      const remoteOutputs: Record<string, any> = data.outputs || {};
+      if (Object.keys(remoteOutputs).length > 0) {
+        const entries = Object.entries(remoteOutputs).map(([nodeId, output]) => ({ nodeId, output }));
+        entries.forEach((e) => remoteOutputUpdates.current.add(e.nodeId));
+        setOutputs((prev: any[]) => {
+          const existingIds = new Set(prev.map((o: any) => o.nodeId));
+          const newEntries = entries.filter((e) => !existingIds.has(e.nodeId));
+          return [...prev, ...newEntries];
+        });
+      }
 
       // Apply existing graph so late joiners see the full canvas
       const remoteNodes: any[] = data.nodes || [];
@@ -215,6 +240,18 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
         if (prev.some((e) => e.id === edge.id)) return prev;
         return [...prev, edge];
       });
+
+      // Propagate source node's output to the newly connected target node
+      // using the synced outputs[] array as the source of truth
+      if (edge.sourceHandle !== 'in/out' || edge.targetHandle !== 'in/out') {
+        const srcOutput = outputsRef.current.find((o: any) => o.nodeId === edge.source);
+        if (srcOutput) {
+          setNodes((prev: any[]) => prev.map((n) => {
+            if (n.id !== edge.target) return n;
+            return { ...n, data: { ...n.data, input: srcOutput.output, source: edge.source } };
+          }));
+        }
+      }
     });
 
     socket.on('edge_removed', (data: { edgeId: string }) => {
@@ -227,11 +264,37 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
       remoteNodeUpdates.current.add(node.id);
       setNodes((prev: any[]) => prev.map((n) => {
         if (n.id !== node.id) return n;
-        // Merge remote data but preserve any local class instances (e.g. pythonInterpreter)
         const remoteData = { ...node.data };
         SKIP_DATA_FIELDS.forEach((f) => delete remoteData[f]);
         return { ...n, data: { ...n.data, ...remoteData } };
       }));
+    });
+
+    // ── Output sync ─────────────────────────────────────────────────────
+
+    socket.on('output_produced', (data: any) => {
+      const { nodeId, output } = data;
+      remoteOutputUpdates.current.add(nodeId);
+      setOutputs((prev: any[]) => {
+        const idx = prev.findIndex((o: any) => o.nodeId === nodeId);
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = { nodeId, output };
+          return updated;
+        }
+        return [...prev, { nodeId, output }];
+      });
+
+      // Propagate output to downstream connected nodes
+      const downstream = edgesRef.current
+        .filter((e: any) => e.source === nodeId && !(e.sourceHandle === 'in/out' && e.targetHandle === 'in/out'))
+        .map((e: any) => e.target);
+      if (downstream.length > 0) {
+        setNodes((prev: any[]) => prev.map((n) => {
+          if (!downstream.includes(n.id)) return n;
+          return { ...n, data: { ...n.data, input: output, source: nodeId } };
+        }));
+      }
     });
 
     // ── Lock events ───────────────────────────────────────────────────────
@@ -332,6 +395,23 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
 
     prevEdgeIds.current = currentIds;
   }, [edges]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Detect local output changes and emit ────────────────────────────────
+
+  useEffect(() => {
+    for (const entry of outputs) {
+      const fp = JSON.stringify(entry.output);
+      const prevFp = prevOutputFingerprints.current.get(entry.nodeId);
+      if (prevFp === fp) continue;
+      prevOutputFingerprints.current.set(entry.nodeId, fp);
+
+      if (remoteOutputUpdates.current.has(entry.nodeId)) {
+        remoteOutputUpdates.current.delete(entry.nodeId);
+      } else {
+        socketRef.current?.emit('output_produced', { sessionId, userId: myUserId, nodeId: entry.nodeId, output: entry.output });
+      }
+    }
+  }, [outputs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Lock API ────────────────────────────────────────────────────────────
 

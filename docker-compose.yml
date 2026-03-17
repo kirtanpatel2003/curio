@@ -16,3 +16,4 @@ services:
     volumes:
       - ./templates:/app/templates
       - ./data:/app/data
+      - /Users/kirtanpatel/Downloads:/Users/kirtanpatel/Downloads:ro

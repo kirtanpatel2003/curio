@@ -54,6 +54,7 @@ interface FlowContextProps {
     edges: Edge[];
     setNodes: (updater: Node[] | ((prev: Node[]) => Node[])) => void;
     setEdges: (updater: Edge[] | ((prev: Edge[]) => Edge[])) => void;
+    outputs: IOutput[];
     setOutputs: (updateFn: (outputs: IOutput[]) => IOutput[]) => void;
     setInteractions: (updateFn: (interactions: IInteraction[]) => IInteraction[]) => void;
     applyNewPropagation: (propagation: IPropagation) => void;
@@ -101,6 +102,7 @@ export const FlowContext = createContext<FlowContextProps>({
     edges: [],
     setNodes: () => { },
     setEdges: () => { },
+    outputs: [],
     setOutputs: () => { },
     setInteractions: () => { },
     applyNewPropagation: () => { },
@@ -303,9 +305,7 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
         if (sourceHandle == "in/out" && targetHandle == "in/out") return;
 
         let getOutput = outId;
-        let setInput = inId;
-
-        let output = "";
+        let output: any = "";
 
         setOutputs((opts: any) =>
             opts.map((opt: any) => {
@@ -787,6 +787,7 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
                 edges,
                 setNodes,
                 setEdges,
+                outputs,
                 setOutputs,
                 setInteractions,
                 applyNewPropagation,

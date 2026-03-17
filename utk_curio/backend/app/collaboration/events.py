@@ -11,6 +11,9 @@ _room_users: dict = {}
 # {room: {nodes: {id: node}, edges: {id: edge}}}  — live graph state
 _room_graph: dict = {}
 
+# {room: {nodeId: output_value}}  — execution outputs per node
+_room_outputs: dict = {}
+
 _COLORS = [
     '#e74c3c', '#3498db', '#2ecc71', '#f39c12',
     '#9b59b6', '#1abc9c', '#e67e22', '#16a085',
@@ -70,6 +73,7 @@ def on_join(data):
         ],
         'nodes': list(graph['nodes'].values()),
         'edges': list(graph['edges'].values()),
+        'outputs': _room_outputs.get(room, {}),
     })
 
     # Tell everyone else a new user arrived
@@ -121,6 +125,8 @@ def on_node_removed(data):
     node_id = data.get('nodeId')
     if node_id and room in _room_graph:
         _room_graph[room]['nodes'].pop(node_id, None)
+    if node_id:
+        _room_outputs.get(room, {}).pop(node_id, None)
     emit('node_removed', data, to=room, include_self=False)
 
 
@@ -140,6 +146,19 @@ def on_edge_removed(data):
     if edge_id and room in _room_graph:
         _room_graph[room]['edges'].pop(edge_id, None)
     emit('edge_removed', data, to=room, include_self=False)
+
+
+# ── Output sync ──────────────────────────────────────────────────────────────
+
+@socketio.on('output_produced')
+def on_output_produced(data):
+    """Sync execution outputs so all browsers can propagate data on new connections."""
+    room = data.get('sessionId', 'default')
+    node_id = data.get('nodeId')
+    output = data.get('output')
+    if node_id:
+        _room_outputs.setdefault(room, {})[node_id] = output
+    emit('output_produced', data, to=room, include_self=False)
 
 
 # ── Node lock / conflict detection ──────────────────────────────────────────

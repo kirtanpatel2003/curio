@@ -126,14 +126,14 @@ export const useVega = ({ data, code }: { data: any; code: string; }) => {
   // both a compiled grammar (code) and connected data (data.input), but hasn't
   // manually clicked "Apply" yet (so currentView is still null).
   useEffect(() => {
-    if (currentView !== null) return;                          // already initialized
-    if (!code || code.trim() === '' || code.trim() === '{}') return; // no grammar
+    if (currentView !== null) return;
+    if (!code || code.trim() === '' || code.trim() === '{}') return;
     const hasInput = data.input && data.input !== '';
-    if (!hasInput) return;                                     // no data connected
+    if (!hasInput) return;
     try {
       compileGrammar(JSON.parse(code));
-    } catch (_) {
-      // invalid grammar JSON — skip silently
+    } catch (e) {
+      console.error('Vega auto-init compileGrammar error:', e);
     }
   }, [data.input, code]); // eslint-disable-line react-hooks/exhaustive-deps
 

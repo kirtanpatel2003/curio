@@ -25,6 +25,20 @@ export function useBoxState(data: any, boxType: BoxType) {
 
   useEffect(() => { data.output = output; }, [output]);
 
+  // Reverse-sync: when collaboration updates node.data.output via setNodes, pull into local state
+  useEffect(() => {
+    if (data.output && data.output.content && data.output.content !== output.content) {
+      setOutput(data.output);
+    }
+  }, [data.output?.content, data.output?.code]);
+
+  // Reverse-sync: when collaboration updates node.data.code via setNodes, pull into local state
+  useEffect(() => {
+    if (data.code && data.code !== code) {
+      setCode(data.code);
+    }
+  }, [data.code]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (data.templateId != undefined) {
       setTemplateData({
