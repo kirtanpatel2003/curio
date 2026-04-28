@@ -10,8 +10,16 @@ export interface BoxOutput {
 }
 
 export function useBoxState(data: any, boxType: BoxType) {
-  const [output, setOutput] = useState<BoxOutput>({ code: '', content: '', outputType: '' });
-  const [code, setCode] = useState<string>('');
+  const [output, setOutput] = useState<BoxOutput>(
+    data.output || { code: '', content: '', outputType: '' }
+  );
+  const [code, setCode] = useState<string>(
+    typeof data.code === 'string'
+      ? data.code
+      : typeof data.defaultCode === 'string'
+        ? data.defaultCode
+        : ''
+  );
   const [sendCode, setSendCode] = useState<any>();
   const [templateData, setTemplateData] = useState<Template | any>({});
   const [newTemplateFlag, setNewTemplateFlag] = useState(false);
@@ -20,8 +28,6 @@ export function useBoxState(data: any, boxType: BoxType) {
 
   const { editUserTemplate } = useTemplateContext();
   const { user } = useUserContext();
-
-  useEffect(() => { data.code = code; }, [code]);
 
   useEffect(() => { data.output = output; }, [output]);
 

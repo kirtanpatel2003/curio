@@ -81,7 +81,8 @@ function WidgetsEditor({
             setUploadResult({ success: false, message: "Please select a file first", savedPath: null });
             return;
         }
-        if (typeof data?.pythonInterpreter?.interpretCode !== "function") {
+        const interpreter = data?.pythonInterpreter;
+        if (!interpreter || typeof interpreter.interpretCode !== "function") {
             setUploadResult({ success: false, message: "Python interpreter not available", savedPath: null });
             return;
         }
@@ -145,7 +146,7 @@ except Exception as e:
     return df`;
 }
 
-            data.pythonInterpreter.interpretCode(
+            interpreter.interpretCode(
                 pythonCode,
                 pythonCode,
                 data.input,

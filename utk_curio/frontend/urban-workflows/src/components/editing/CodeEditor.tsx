@@ -9,6 +9,7 @@ import { BoxType } from "../../constants";
 import Editor from "@monaco-editor/react";
 import { useFlowContext } from "../../providers/FlowProvider";
 import { useProvenanceContext } from "../../providers/ProvenanceProvider";
+import { useCollaborationContext } from "../../providers/CollaborationProvider";
 import { ICodeData } from "../../types";
 
 type CodeEditorProps = {
@@ -36,31 +37,63 @@ function CodeEditor({
     defaultValue,
     floatCode,
 }: CodeEditorProps) {
-    const [code, setCode] = useState<string>(""); // code with all original markers
+    const [code, setCode] = useState<string>(
+        typeof defaultValue === "string" ? defaultValue : ""
+    ); // code with all original markers
 
     const { workflowNameRef } = useFlowContext();
     const { boxExecProv } = useProvenanceContext();
+    const { requestCodeChange } = useCollaborationContext();
 
     const replacedCodeDirtyBypass = useRef(false);
-    const defaultValueBypass = useRef(false);
+    const codeRef = useRef(code);
+    const requestCodeChangeRef = useRef(requestCodeChange);
+    const lastApprovedStampRef = useRef<number | undefined>(data?._approvedCodeStamp);
+
+    useEffect(() => {
+        codeRef.current = code;
+    }, [code]);
+
+    useEffect(() => {
+        requestCodeChangeRef.current = requestCodeChange;
+    }, [requestCodeChange]);
 
     // @ts-ignore
     const handleCodeChange = (value, event) => {
         setCode(value);
     };
 
+    // Unified handler for both "defaultValue changed" (new shared code arrived
+    // or the user navigated provenance) and "code-change proposal accepted".
+    // Kept in a single effect because if defaultValue and the stamp change in
+    // the same render two separate effects would each toggle markersDirty —
+    // an even number of toggles cancels out, so WidgetsEditor never resolves
+    // markers and the accepted code never runs.
     useEffect(() => {
-        if (defaultValue != undefined && defaultValueBypass.current) {
-            setCode(defaultValue);
-            sendCodeToWidgets(defaultValue); // will resolve markers for templated boxes
-        }
+        if (typeof defaultValue !== "string") return;
+        const stamp = data?._approvedCodeStamp;
+        const stampAdvanced = stamp !== undefined && stamp !== lastApprovedStampRef.current;
 
-        defaultValueBypass.current = true;
-    }, [defaultValue]);
+        if (stampAdvanced) {
+            lastApprovedStampRef.current = stamp;
+            setCode(defaultValue);
+            setOutputCallback({ code: "exec", content: "" });
+            sendCodeToWidgets(defaultValue);
+        } else if (defaultValue !== code) {
+            setCode(defaultValue);
+            sendCodeToWidgets(defaultValue);
+        }
+    }, [defaultValue, data?._approvedCodeStamp]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         if (floatCode != undefined) floatCode(code);
     }, [code]);
+
+    const commitCodeChange = () => {
+        if (!readOnly && data?.nodeId) {
+            requestCodeChangeRef.current(data.nodeId, codeRef.current);
+        }
+    };
 
     const processExecutionResult = (result: any) => {
         const stdout = typeof result?.stdout === "string" ? result.stdout : "";
@@ -101,7 +134,17 @@ function CodeEditor({
         ) {
             // the code was executing and not only resolving widgets
             // console.log(data);
-            if (typeof data?.pythonInterpreter?.interpretCode !== "function") {
+            if (!readOnly && typeof defaultValue === "string" && code !== defaultValue) {
+                requestCodeChangeRef.current(data.nodeId, code);
+                setOutputCallback({
+                    code: "warning",
+                    content: "Code change is waiting for collaborator approval before it can run.",
+                });
+                return;
+            }
+
+            const interpreter = data?.pythonInterpreter;
+            if (!interpreter || typeof interpreter.interpretCode !== "function") {
                 setOutputCallback({
                     code: "error",
                     content: "Python interpreter is not available for this node. Try refreshing the workflow or re-adding the node.",
@@ -109,7 +152,7 @@ function CodeEditor({
                 return;
             }
 
-            data.pythonInterpreter.interpretCode(
+            interpreter.interpretCode(
                 code,
                 replacedCode,
                 data.input,
@@ -163,6 +206,9 @@ function CodeEditor({
                 theme="vs-dark"
                 value={code}
                 onChange={handleCodeChange}
+                onMount={(editor) => {
+                    editor.onDidBlurEditorText(commitCodeChange);
+                }}
                 options={{
                     // @ts-ignore
                     inlineSuggest: true,

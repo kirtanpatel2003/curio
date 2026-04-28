@@ -178,6 +178,7 @@ export function useCode(): IUseCode {
             data: {
                 nodeId: nodeId,
                 pythonInterpreter: pythonInterpreter,
+                code,
                 defaultCode: code,
                 description,
                 templateId,

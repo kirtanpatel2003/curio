@@ -32,6 +32,7 @@ function UniversalBox({ data, isConnectable }: { data: any; isConnectable: boole
   const output = lifecycle.outputOverride ?? boxState.output
   const showLoading = lifecycle.showLoading ?? false;
   const defaultValue =
+    data.code ??
     lifecycle.defaultValueOverride ??
     (boxState.templateData.code ? boxState.templateData.code : data.defaultCode);
   const readOnly =

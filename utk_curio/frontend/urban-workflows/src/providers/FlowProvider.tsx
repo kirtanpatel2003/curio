@@ -47,6 +47,16 @@ export interface IPropagation {
     propagation: any; // {[index]: [interaction value]}
 }
 
+const outputDisplayForNode = (output: any) => ({
+    code: output ? "success" : "",
+    content: output?.path
+        ? `Shared output available.\nSaved to file: ${output.path}\nType: ${output.dataType || "unknown"}`
+        : output
+            ? "Shared output available."
+            : "No output available.",
+    outputType: output?.dataType || "",
+});
+
 // applyNewOutputs = useCallback((newOutNodeId: string, newOutput: string)
 
 interface FlowContextProps {
@@ -595,6 +605,20 @@ const FlowProvider = ({ children }: { children: ReactNode }) => {
 
         setNodes((nds: any) =>
             nds.map((node: any) => {
+                if (node.id === newOutput.nodeId) {
+                    const displayOutput = outputDisplayForNode(newOutput.output);
+                    return {
+                        ...node,
+                        data: {
+                            ...node.data,
+                            output: displayOutput,
+                            lastOutput: newOutput.output,
+                            outputRef: (newOutput.output as any)?.path,
+                            outputDataType: (newOutput.output as any)?.dataType,
+                        },
+                    };
+                }
+
                 if (!nodesAffected.includes(node.id)) return node;
 
                 if (node.type == BoxType.MERGE_FLOW) {

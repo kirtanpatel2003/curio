@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import JSONEditorReact from "./JSONEditorReact";
 import { Button } from "react-bootstrap";
 import { ICodeData } from "../../types";
+import { useCollaborationContext } from "../../providers/CollaborationProvider";
 
 import "./GrammarEditor.css";
 
@@ -36,11 +37,11 @@ export default function GrammarEditor({
     readOnly,
 }: GrammarEditorProps) {
     const [mode, setMode] = useState("code");
+    const { requestCodeChange } = useCollaborationContext();
 
     const [activeSchema, setActiveSchema] = useState<any>(schema);
 
     const replacedCodeDirtyBypass = useRef(false);
-    const defaultValueBypass = useRef(false);
     const readOnlyBypass = useRef(false);
 
     // const [grammar, _setCode] = useState('');
@@ -51,7 +52,9 @@ export default function GrammarEditor({
     //     _setCode(data);
     // };
 
-    const [grammar, _setGrammar] = useState("{}");
+    const [grammar, _setGrammar] = useState(
+        typeof defaultValue === "string" ? defaultValue : "{}"
+    );
 
     const grammarRef = React.useRef(grammar);
     const setGrammar = (data: string) => {
@@ -66,9 +69,9 @@ export default function GrammarEditor({
     // }, []);
 
     useEffect(() => {
-        if (defaultValueBypass.current) setGrammar(defaultValue);
-
-        defaultValueBypass.current = true;
+        if (defaultValue != undefined && defaultValue !== grammarRef.current) {
+            setGrammar(defaultValue);
+        }
     }, [defaultValue]);
 
     useEffect(() => {
@@ -102,6 +105,10 @@ export default function GrammarEditor({
         if (!readOnly) setGrammar(grammarObj);
     };
 
+    const commitGrammarChange = () => {
+        if (!readOnly) requestCodeChange(nodeId, grammarRef.current);
+    };
+
     const onModeChange = (mode: string) => {
         setMode(mode);
     };
@@ -117,6 +124,7 @@ export default function GrammarEditor({
                 id={"vega-editor_" + nodeId}
                 className="my-editor nowheel nodrag"
                 style={{ overflowY: "auto", fontSize: "24px", height: "100%" }}
+                onBlur={commitGrammarChange}
             >
                 <JSONEditorReact
                     nodeId={nodeId}

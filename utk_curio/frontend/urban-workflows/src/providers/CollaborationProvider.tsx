@@ -60,6 +60,20 @@ export interface ActivityItem {
   details?: any;
 }
 
+export interface CodeChangeProposal {
+  proposalId: string;
+  nodeId: string;
+  node: any;
+  currentNode?: any;
+  proposedBy: CollabUser;
+  requiredUserIds: string[];
+  approvals: Record<string, { user: CollabUser; timestamp: number }>;
+  comments: Record<string, { user: CollabUser; comment: string; timestamp: number }>;
+  changeSummary?: string[];
+  timestamp: number;
+  status?: string;
+}
+
 export type ConflictResolutionAction = 'keep_mine' | 'accept_other' | 'manual' | 'cancel';
 
 interface CollaborationContextProps {
@@ -71,12 +85,16 @@ interface CollaborationContextProps {
   connectedUsers: CollabUser[];
   lockedNodes: Record<string, LockInfo>;
   conflicts: Conflict[];
+  codeChangeProposals: CodeChangeProposal[];
   activityLog: ActivityItem[];
   setUserName: (name: string) => void;
   lockNode: (nodeId: string) => void;
   unlockNode: (nodeId: string) => void;
   dismissConflict: (nodeId: string) => void;
   resolveConflict: (conflict: Conflict, action: ConflictResolutionAction) => void;
+  requestCodeChange: (nodeId: string, code: string) => void;
+  approveCodeChange: (proposalId: string) => void;
+  rejectCodeChange: (proposalId: string, comment: string) => void;
 }
 
 const CollaborationContext = createContext<CollaborationContextProps>({
@@ -88,12 +106,16 @@ const CollaborationContext = createContext<CollaborationContextProps>({
   connectedUsers: [],
   lockedNodes: {},
   conflicts: [],
+  codeChangeProposals: [],
   activityLog: [],
   setUserName: () => {},
   lockNode: () => {},
   unlockNode: () => {},
   dismissConflict: () => {},
   resolveConflict: () => {},
+  requestCodeChange: () => {},
+  approveCodeChange: () => {},
+  rejectCodeChange: () => {},
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -102,18 +124,30 @@ const BACKEND_URL =
   (window as any).__CURIO_BACKEND_URL__ ||
   `http://${window.location.hostname}:5002`;
 
-// Fields in node.data that are class instances or functions — never sync them.
-const SKIP_DATA_FIELDS = new Set(['pythonInterpreter']);
+// Runtime-only fields in node.data — class instances or functions that must be
+// recreated locally in each browser. Never sync them over the socket, and always
+// reattach the local versions when receiving a remote node.
+const RUNTIME_DATA_FIELDS = new Set([
+  'pythonInterpreter',
+  'outputCallback',
+  'interactionsCallback',
+  'propagationCallback',
+]);
+
+// Local-only stamps that must not bounce back to the server.
+const LOCAL_ONLY_DATA_FIELDS = new Set(['_approvedCodeStamp']);
 
 /**
- * Strip non-serializable fields from a node before sending over the socket.
- * Returns a plain-JSON-safe copy.
+ * Strip non-serializable / runtime-only fields from a node before sending over
+ * the socket. The shared payload only carries plain-JSON state — accepted code,
+ * output snapshot, position, etc. Local runtime callbacks are reattached on
+ * receive via hydrateNodeForRuntime.
  */
 function serializeNode(node: any): any {
   const data: Record<string, any> = {};
   for (const [k, v] of Object.entries(node.data || {})) {
-    if (SKIP_DATA_FIELDS.has(k)) continue;
-    // Also skip functions and class instances (keep only plain values)
+    if (RUNTIME_DATA_FIELDS.has(k)) continue;
+    if (LOCAL_ONLY_DATA_FIELDS.has(k)) continue;
     if (typeof v === 'function') continue;
     if (v !== null && typeof v === 'object' && typeof (v as any).interpretCode === 'function') continue;
     data[k] = v;
@@ -131,8 +165,6 @@ function nodeFingerprintPayload(node: any): Record<string, any> {
     defaultCode: d.defaultCode,
     content: d.content,
     code: d.code,
-    outputCode: d.output?.code,
-    outputContent: d.output?.content,
   };
 }
 
@@ -152,8 +184,6 @@ function summarizeNodeChange(previousFingerprint: string | undefined, node: any)
       defaultCode: 'default code',
       content: 'content',
       code: 'code',
-      outputCode: 'output code',
-      outputContent: 'output',
     };
     return Object.keys(labels).filter((key) =>
       JSON.stringify(previous[key]) !== JSON.stringify(current[key])
@@ -161,6 +191,26 @@ function summarizeNodeChange(previousFingerprint: string | undefined, node: any)
   } catch (_) {
     return ['node'];
   }
+}
+
+function upsertById<T extends { proposalId: string }>(items: T[], item: T): T[] {
+  const index = items.findIndex((existing) => existing.proposalId === item.proposalId);
+  if (index < 0) return [item, ...items];
+  const next = [...items];
+  next[index] = item;
+  return next;
+}
+
+function outputDisplayForNode(output: any) {
+  return {
+    code: output ? 'success' : '',
+    content: output?.path
+      ? `Shared output available.\nSaved to file: ${output.path}\nType: ${output.dataType || 'unknown'}`
+      : output
+        ? 'Shared output available.'
+        : 'No output available.',
+    outputType: output?.dataType || '',
+  };
 }
 
 function getOrCreateUserId(): string {
@@ -203,6 +253,7 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
   const [connectedUsers, setConnectedUsers] = useState<CollabUser[]>([]);
   const [lockedNodes, setLockedNodes] = useState<Record<string, LockInfo>>({});
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
+  const [codeChangeProposals, setCodeChangeProposals] = useState<CodeChangeProposal[]>([]);
   const [activityLog, setActivityLog] = useState<ActivityItem[]>([]);
 
   // Track previous node/edge id-sets to diff local changes
@@ -245,9 +296,21 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
   }, [setInteractions]);
 
   const hydrateNodeForRuntime = useCallback((node: any, existingNode?: any) => {
-    const remoteData = { ...(node.data || {}) };
-    SKIP_DATA_FIELDS.forEach((field) => delete remoteData[field]);
+    // Strip runtime-only fields off the incoming remote node — they cannot be
+    // serialized and must always be reattached locally on receive.
+    const remoteData: Record<string, any> = {};
+    for (const [k, v] of Object.entries(node.data || {})) {
+      if (RUNTIME_DATA_FIELDS.has(k)) continue;
+      remoteData[k] = v;
+    }
     const existingData = existingNode?.data || {};
+    // data.code is the shared, accepted code. If the remote payload doesn't
+    // carry one yet (newly added node), fall back to whatever local code we
+    // already had so the editor doesn't lose the user's view of the node.
+    const sharedCode =
+      typeof remoteData.code === 'string'
+        ? remoteData.code
+        : existingData.code;
 
     return {
       ...node,
@@ -255,10 +318,15 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
         ...existingData,
         ...remoteData,
         nodeId: remoteData.nodeId || existingData.nodeId || node.id,
-        pythonInterpreter: existingData.pythonInterpreter || pythonInterpreter,
-        outputCallback: existingData.outputCallback || outputCallback,
-        interactionsCallback: existingData.interactionsCallback || interactionsCallback,
-        propagationCallback: existingData.propagationCallback || applyNewPropagation,
+        code: sharedCode,
+        // Always reattach runtime fields with the local instances. Remote
+        // payloads strip these (they can't be serialized), and stale closures
+        // from a previous mount of this provider would not be wired to the
+        // current FlowProvider's setOutputs / applyNewOutput.
+        pythonInterpreter,
+        outputCallback,
+        interactionsCallback,
+        propagationCallback: applyNewPropagation,
       },
     };
   }, [applyNewPropagation, interactionsCallback, outputCallback, pythonInterpreter]);
@@ -293,6 +361,7 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
       setLockedNodes(data.lockedNodes || {});
       setConnectedUsers(data.connectedUsers || []);
       setActivityLog(data.activityLog || []);
+      setCodeChangeProposals(data.codeChangeProposals || []);
 
       nodeRevisions.current = new Map(Object.entries(data.nodeRevisions || {}).map(([id, rev]) => [id, Number(rev)]));
       edgeRevisions.current = new Map(Object.entries(data.edgeRevisions || {}).map(([id, rev]) => [id, Number(rev)]));
@@ -307,6 +376,20 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
           const newEntries = entries.filter((e) => !existingIds.has(e.nodeId));
           return [...prev, ...newEntries];
         });
+        setNodes((prev: any[]) => prev.map((node) => {
+          const output = remoteOutputs[node.id];
+          if (!output) return node;
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              output: outputDisplayForNode(output),
+              lastOutput: output,
+              outputRef: output?.path,
+              outputDataType: output?.dataType,
+            },
+          };
+        }));
       }
 
       // Apply existing graph so late joiners see the full canvas
@@ -316,11 +399,19 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
       if (remoteNodes.length > 0) {
         remoteNodes.forEach((n) => remoteNodeAdds.current.add(n.id));
         setNodes((prev: any[]) => {
+          const remoteById = new Map(remoteNodes.map((n) => [n.id, n]));
           const existingIds = new Set(prev.map((n) => n.id));
+          const updatedExisting = prev.map((n) => {
+            const remoteNode = remoteById.get(n.id);
+            return remoteNode ? hydrateNodeForRuntime(remoteNode, n) : n;
+          });
           const safeNodes = remoteNodes
             .filter((n) => !existingIds.has(n.id))
             .map((n) => hydrateNodeForRuntime(n));
-          return [...prev, ...safeNodes];
+          const nextNodes = [...updatedExisting, ...safeNodes];
+          prevNodeIds.current = new Set(nextNodes.map((n) => n.id));
+          nextNodes.forEach((n) => prevNodeData.current.set(n.id, dataFingerprint(n)));
+          return nextNodes;
         });
       }
       if (remoteEdges.length > 0) {
@@ -438,6 +529,20 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
         return [...prev, { nodeId, output }];
       });
 
+      setNodes((prev: any[]) => prev.map((n) => {
+        if (n.id !== nodeId) return n;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            output: outputDisplayForNode(output),
+            lastOutput: output,
+            outputRef: output?.path,
+            outputDataType: output?.dataType,
+          },
+        };
+      }));
+
       // Propagate output to downstream connected nodes
       const downstream = edgesRef.current
         .filter((e: any) => e.source === nodeId && !(e.sourceHandle === 'in/out' && e.targetHandle === 'in/out'))
@@ -475,11 +580,62 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
       });
     });
 
+    const upsertProposal = (proposal: CodeChangeProposal) => {
+      setCodeChangeProposals((prev) => upsertById(prev, proposal));
+    };
+
+    socket.on('code_change_requested', upsertProposal);
+    socket.on('code_change_approved', upsertProposal);
+    socket.on('code_change_rejected', upsertProposal);
+    socket.on('code_change_applied', (proposal: CodeChangeProposal & { node?: any; revision?: number }) => {
+      setCodeChangeProposals((prev) => prev.filter((p) => p.proposalId !== proposal.proposalId));
+      if (proposal.node) {
+        if (proposal.revision !== undefined) nodeRevisions.current.set(proposal.node.id, Number(proposal.revision));
+        remoteNodeUpdates.current.add(proposal.node.id);
+        // Stamp the node so the local code editor knows accepted code arrived
+        // and should be executed. The stamp is local-only (stripped on emit).
+        const stamp = Date.now();
+        setNodes((prev: any[]) => prev.map((n) => {
+          if (n.id !== proposal.node.id) return n;
+          const hydrated = hydrateNodeForRuntime(proposal.node, n);
+          return { ...hydrated, data: { ...hydrated.data, _approvedCodeStamp: stamp } };
+        }));
+      }
+    });
+
     return () => {
       socket.emit('leave_session', { sessionId, userId: myUserId });
       socket.disconnect();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Safety net: any time a node is missing one of the runtime fields (e.g. it
+  // came in via session_state on a fresh page load and the editor would
+  // otherwise crash on `data.pythonInterpreter.interpretCode`), patch it up
+  // here before the editor renders.
+  useEffect(() => {
+    const isRuntimeMissing = (node: any) => {
+      const d = node.data || {};
+      const interpreter = d.pythonInterpreter;
+      return (
+        !interpreter ||
+        typeof interpreter.interpretCode !== 'function' ||
+        typeof d.outputCallback !== 'function' ||
+        typeof d.interactionsCallback !== 'function' ||
+        typeof d.propagationCallback !== 'function'
+      );
+    };
+
+    if (!nodes.some(isRuntimeMissing)) return;
+
+    setNodes((prev: any[]) => prev.map((node) => {
+      if (!isRuntimeMissing(node)) return node;
+      remoteNodeUpdates.current.add(node.id);
+      const hydrated = hydrateNodeForRuntime(node, node);
+      prevNodeData.current.set(hydrated.id, dataFingerprint(hydrated));
+      return hydrated;
+    }));
+  }, [nodes, hydrateNodeForRuntime, setNodes]);
 
   // ── Detect local node changes and emit ──────────────────────────────────
 
@@ -690,6 +846,50 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
     });
   }, [applyServerVersion, myUserId, myUserName, sessionId]);
 
+  const requestCodeChange = useCallback((nodeId: string, code: string) => {
+    const node = nodes.find((n: any) => n.id === nodeId);
+    if (!node) return;
+
+    const currentCode = node.data?.code ?? node.data?.defaultCode ?? '';
+    if (code === currentCode) return;
+
+    const nextNode = {
+      ...node,
+      data: {
+        ...(node.data || {}),
+        code,
+      },
+    };
+
+    socketRef.current?.emit('request_code_change', {
+      sessionId,
+      userId: myUserId,
+      userName: myUserName,
+      node: serializeNode(nextNode),
+      baseRevision: nodeRevisions.current.get(nodeId) || 0,
+      changeSummary: ['code'],
+    });
+  }, [myUserId, myUserName, nodes, sessionId]);
+
+  const approveCodeChange = useCallback((proposalId: string) => {
+    socketRef.current?.emit('approve_code_change', {
+      sessionId,
+      userId: myUserId,
+      userName: myUserName,
+      proposalId,
+    });
+  }, [myUserId, myUserName, sessionId]);
+
+  const rejectCodeChange = useCallback((proposalId: string, comment: string) => {
+    socketRef.current?.emit('reject_code_change', {
+      sessionId,
+      userId: myUserId,
+      userName: myUserName,
+      proposalId,
+      comment,
+    });
+  }, [myUserId, myUserName, sessionId]);
+
   return (
     <CollaborationContext.Provider value={{
       isConnected,
@@ -700,12 +900,16 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
       connectedUsers,
       lockedNodes,
       conflicts,
+      codeChangeProposals,
       activityLog,
       setUserName,
       lockNode,
       unlockNode,
       dismissConflict,
       resolveConflict,
+      requestCodeChange,
+      approveCodeChange,
+      rejectCodeChange,
     }}>
       {children}
     </CollaborationContext.Provider>

@@ -29,6 +29,9 @@ _room_tombstones: dict = {}
 # {room: [activity, ...]}
 _room_activity: dict = {}
 
+# {room: {proposalId: proposal}} - pending shared-code changes awaiting approval
+_room_code_proposals: dict = {}
+
 _ACTIVITY_LIMIT = 50
 
 _COLORS = [
@@ -171,6 +174,178 @@ def _make_conflict(room: str, conflict_type: str, user_id: str, message: str, en
     return conflict
 
 
+def _node_code_snapshot(node: dict | None) -> dict:
+    data = node.get('data', {}) if isinstance(node, dict) else {}
+    if not isinstance(data, dict):
+        data = {}
+    effective_code = data.get('code')
+    if effective_code in (None, ''):
+        effective_code = data.get('defaultCode') or data.get('content')
+    return {
+        'effectiveCode': effective_code,
+        'defaultCode': data.get('defaultCode'),
+        'content': data.get('content'),
+    }
+
+
+def _node_code_changed(current_node: dict | None, incoming_node: dict | None) -> bool:
+    if not incoming_node:
+        return False
+    return _node_code_snapshot(current_node) != _node_code_snapshot(incoming_node)
+
+
+def _output_display(output: dict | None) -> dict:
+    if isinstance(output, dict) and output.get('path'):
+        return {
+            'code': 'success',
+            'content': f"Shared output available.\nSaved to file: {output.get('path')}\nType: {output.get('dataType') or 'unknown'}",
+            'outputType': output.get('dataType') or '',
+        }
+    if output:
+        return {
+            'code': 'success',
+            'content': 'Shared output available.',
+            'outputType': '',
+        }
+    return {
+        'code': '',
+        'content': 'No output available.',
+        'outputType': '',
+    }
+
+
+def _pending_code_proposals(room: str) -> dict:
+    return _room_code_proposals.setdefault(room, {})
+
+
+def _proposal_payload(proposal: dict) -> dict:
+    return {
+        'proposalId': proposal['proposalId'],
+        'nodeId': proposal['nodeId'],
+        'node': proposal['node'],
+        'currentNode': proposal.get('currentNode'),
+        'proposedBy': proposal['proposedBy'],
+        'requiredUserIds': proposal.get('requiredUserIds', []),
+        'approvals': proposal.get('approvals', {}),
+        'comments': proposal.get('comments', {}),
+        'changeSummary': proposal.get('changeSummary', []),
+        'timestamp': proposal.get('timestamp'),
+        'status': proposal.get('status', 'pending'),
+    }
+
+
+def _find_pending_code_proposal(room: str, node_id: str, proposed_by: str | None = None) -> dict | None:
+    for proposal in _pending_code_proposals(room).values():
+        if proposal.get('status') != 'pending':
+            continue
+        if proposal.get('nodeId') != node_id:
+            continue
+        if proposed_by is not None and proposal.get('proposedBy', {}).get('userId') != proposed_by:
+            continue
+        return proposal
+    return None
+
+
+def _has_pending_code_proposal(room: str, node_id: str) -> bool:
+    return _find_pending_code_proposal(room, node_id) is not None
+
+
+def _apply_code_proposal(room: str, proposal_id: str, applied_by: str) -> bool:
+    proposal = _pending_code_proposals(room).get(proposal_id)
+    if not proposal or proposal.get('status') != 'pending':
+        return False
+
+    required = proposal.get('requiredUserIds', [])
+    approvals = proposal.get('approvals', {})
+    missing = [uid for uid in required if uid not in approvals]
+    if missing:
+        return False
+
+    node = proposal.get('node') or {}
+    node_id = proposal.get('nodeId')
+    if not node_id:
+        return False
+
+    graph = _room_graph.setdefault(room, {'nodes': {}, 'edges': {}})
+    graph['nodes'][node_id] = node
+    _tombstone_bucket(room, 'nodes').pop(node_id, None)
+    revision = _bump_revision(room, 'nodes', node_id, proposal.get('proposedBy', {}).get('userId') or applied_by)
+
+    payload = {
+        'sessionId': room,
+        'userId': proposal.get('proposedBy', {}).get('userId'),
+        'node': node,
+        'revision': revision,
+        'user': proposal.get('proposedBy'),
+        'changeSummary': proposal.get('changeSummary', []),
+        'proposalId': proposal_id,
+    }
+    emit('node_updated', payload, to=room, include_self=True)
+
+    proposal['status'] = 'applied'
+    applied_payload = {
+        **_proposal_payload(proposal),
+        'revision': revision,
+        'approvedBy': _user_payload(room, applied_by),
+    }
+    emit('code_change_applied', applied_payload, to=room)
+    _pending_code_proposals(room).pop(proposal_id, None)
+
+    _record_activity(
+        room,
+        'code_change_applied',
+        applied_by,
+        f"Applied approved code change for node {node_id[:6]}",
+        node_id,
+        {'proposalId': proposal_id},
+    )
+    return True
+
+
+def _request_code_change(room: str, user_id: str, node: dict, change_summary: list | None = None) -> dict:
+    node_id = node.get('id')
+    proposer = _user_payload(room, user_id)
+    proposal = _find_pending_code_proposal(room, node_id, user_id)
+    graph = _room_graph.setdefault(room, {'nodes': {}, 'edges': {}})
+
+    if proposal:
+        proposal['node'] = node
+        proposal['currentNode'] = graph.get('nodes', {}).get(node_id)
+        proposal['changeSummary'] = change_summary or []
+        proposal['timestamp'] = _now_ms()
+        proposal['approvals'] = {user_id: {'user': proposer, 'timestamp': _now_ms()}}
+        proposal['comments'] = {}
+    else:
+        required = [uid for uid in _room_users.get(room, {}) if uid != user_id]
+        proposal = {
+            'proposalId': str(uuid.uuid4()),
+            'nodeId': node_id,
+            'node': node,
+            'currentNode': graph.get('nodes', {}).get(node_id),
+            'proposedBy': proposer,
+            'requiredUserIds': required,
+            'approvals': {user_id: {'user': proposer, 'timestamp': _now_ms()}},
+            'comments': {},
+            'changeSummary': change_summary or [],
+            'timestamp': _now_ms(),
+            'status': 'pending',
+        }
+        _pending_code_proposals(room)[proposal['proposalId']] = proposal
+
+    emit('code_change_requested', _proposal_payload(proposal), to=room)
+    _record_activity(
+        room,
+        'code_change_requested',
+        user_id,
+        f"Requested code change approval for node {node_id[:6]}",
+        node_id,
+        {'proposalId': proposal['proposalId']},
+    )
+
+    _apply_code_proposal(room, proposal['proposalId'], user_id)
+    return proposal
+
+
 def _cleanup_user(room: str, user_id: str) -> None:
     """Remove user from room state and release their node locks."""
     user = _user_payload(room, user_id)
@@ -186,6 +361,13 @@ def _cleanup_user(room: str, user_id: str) -> None:
         for nid in unlocked:
             del _locked_nodes[room][nid]
             emit('node_unlocked', {'nodeId': nid}, to=room)
+
+    for proposal_id, proposal in list(_pending_code_proposals(room).items()):
+        required = proposal.get('requiredUserIds', [])
+        if user_id in required:
+            proposal['requiredUserIds'] = [uid for uid in required if uid != user_id]
+            emit('code_change_requested', _proposal_payload(proposal), to=room)
+            _apply_code_proposal(room, proposal_id, user_id)
 
     emit('user_left', user, to=room)
     _record_activity(room, 'user_left', user_id, f"{user['name']} left the session")
@@ -229,6 +411,11 @@ def on_join(data):
         'nodeRevisions': _room_versions[room]['nodes'],
         'edgeRevisions': _room_versions[room]['edges'],
         'activityLog': _room_activity.get(room, []),
+        'codeChangeProposals': [
+            _proposal_payload(proposal)
+            for proposal in _pending_code_proposals(room).values()
+            if proposal.get('status') == 'pending'
+        ],
     })
 
     # Tell everyone else a new user arrived
@@ -337,6 +524,10 @@ def on_node_updated(data):
         )
         return
 
+    if not force and _node_code_changed(graph['nodes'].get(node_id), node):
+        _request_code_change(room, user_id, node, data.get('changeSummary') or [])
+        return
+
     graph['nodes'][node_id] = node
     _tombstone_bucket(room, 'nodes').pop(node_id, None)
     revision = _bump_revision(room, 'nodes', node_id, user_id)
@@ -351,6 +542,23 @@ def on_node_updated(data):
         node_id,
         {'changeSummary': data.get('changeSummary') or []},
     )
+
+
+@socketio.on('request_code_change')
+def on_request_code_change(data):
+    room = data.get('sessionId', 'default')
+    user_id = data.get('userId') or request.sid
+    node = data.get('node', {})
+    node_id = node.get('id')
+    if not node_id:
+        return
+
+    graph = _room_graph.setdefault(room, {'nodes': {}, 'edges': {}})
+    current_node = graph['nodes'].get(node_id)
+    if not _node_code_changed(current_node, node):
+        return
+
+    _request_code_change(room, user_id, node, data.get('changeSummary') or ['code'])
 
 
 @socketio.on('node_removed')
@@ -527,9 +735,80 @@ def on_output_produced(data):
     node_id = data.get('nodeId')
     output = data.get('output')
     if node_id:
+        if _has_pending_code_proposal(room, node_id):
+            _record_activity(
+                room,
+                'output_blocked',
+                user_id,
+                f"Blocked output for node {node_id[:6]} until code change is approved",
+                node_id,
+            )
+            return
         _room_outputs.setdefault(room, {})[node_id] = output
+        graph = _room_graph.setdefault(room, {'nodes': {}, 'edges': {}})
+        if node_id in graph['nodes']:
+            node_data = graph['nodes'][node_id].setdefault('data', {})
+            if isinstance(node_data, dict):
+                node_data['output'] = _output_display(output)
+                node_data['lastOutput'] = output
+                if isinstance(output, dict):
+                    node_data['outputRef'] = output.get('path')
+                    node_data['outputDataType'] = output.get('dataType')
         _record_activity(room, 'output_produced', user_id, f"Produced output for node {node_id[:6]}", node_id)
     emit('output_produced', {**data, 'user': _user_payload(room, user_id)}, to=room, include_self=False)
+
+
+@socketio.on('approve_code_change')
+def on_approve_code_change(data):
+    room = data.get('sessionId', 'default')
+    user_id = data.get('userId') or request.sid
+    proposal_id = data.get('proposalId')
+    proposal = _pending_code_proposals(room).get(proposal_id)
+    if not proposal or proposal.get('status') != 'pending':
+        return
+
+    proposal.setdefault('approvals', {})[user_id] = {
+        'user': _user_payload(room, user_id),
+        'timestamp': _now_ms(),
+    }
+    proposal.setdefault('comments', {}).pop(user_id, None)
+    emit('code_change_approved', _proposal_payload(proposal), to=room)
+    _record_activity(
+        room,
+        'code_change_approved',
+        user_id,
+        f"Approved code change for node {proposal.get('nodeId', '')[:6]}",
+        proposal.get('nodeId'),
+        {'proposalId': proposal_id},
+    )
+    _apply_code_proposal(room, proposal_id, user_id)
+
+
+@socketio.on('reject_code_change')
+def on_reject_code_change(data):
+    room = data.get('sessionId', 'default')
+    user_id = data.get('userId') or request.sid
+    proposal_id = data.get('proposalId')
+    comment = (data.get('comment') or '').strip()[:500]
+    proposal = _pending_code_proposals(room).get(proposal_id)
+    if not proposal or proposal.get('status') != 'pending':
+        return
+
+    proposal.setdefault('approvals', {}).pop(user_id, None)
+    proposal.setdefault('comments', {})[user_id] = {
+        'user': _user_payload(room, user_id),
+        'comment': comment,
+        'timestamp': _now_ms(),
+    }
+    emit('code_change_rejected', _proposal_payload(proposal), to=room)
+    _record_activity(
+        room,
+        'code_change_rejected',
+        user_id,
+        f"Commented on code change for node {proposal.get('nodeId', '')[:6]}",
+        proposal.get('nodeId'),
+        {'proposalId': proposal_id, 'comment': comment},
+    )
 
 
 # ── Node lock / conflict detection ──────────────────────────────────────────

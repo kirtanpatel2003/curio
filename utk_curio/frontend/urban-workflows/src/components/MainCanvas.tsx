@@ -288,15 +288,19 @@ export function MainCanvas() {
         isConnected,
         connectedUsers,
         conflicts,
+        codeChangeProposals,
         activityLog,
         dismissConflict,
         resolveConflict,
+        approveCodeChange,
+        rejectCodeChange,
         myUserId,
         myUserName,
         myColor,
         setUserName
     } = useCollaborationContext();
     const [nameDraft, setNameDraft] = useState(myUserName);
+    const [proposalComments, setProposalComments] = useState<Record<string, string>>({});
 
     useEffect(() => {
         setNameDraft(myUserName);
@@ -320,6 +324,7 @@ export function MainCanvas() {
         { userId: myUserId, name: myUserName, color: myColor },
         ...connectedUsers.filter((u) => u.userId !== myUserId)
     ];
+    const allUserNames = new Map(allUsers.map((u) => [u.userId, userLabel(u)]));
     const commitUserName = () => setUserName(nameDraft);
 
     return (
@@ -413,6 +418,127 @@ export function MainCanvas() {
                         </div>
                     ))}
                 </div>
+
+                {codeChangeProposals.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+                        {codeChangeProposals.map((proposal) => {
+                            const required = proposal.requiredUserIds || [];
+                            const approvals = proposal.approvals || {};
+                            const comments = proposal.comments || {};
+                            const acceptedCount = required.filter((uid) => approvals[uid]).length;
+                            const missing = required.filter((uid) => !approvals[uid]);
+                            const needsMyDecision = required.includes(myUserId);
+                            const myApproved = Boolean(approvals[myUserId]);
+                            const myComment = proposalComments[proposal.proposalId] ?? comments[myUserId]?.comment ?? "";
+                            const proposedCode =
+                                proposal.node?.data?.code ??
+                                proposal.node?.data?.defaultCode ??
+                                "";
+
+                            return (
+                                <div key={proposal.proposalId} style={{
+                                    border: "1px solid #fedf89",
+                                    background: "#fffbeb",
+                                    borderRadius: 8,
+                                    padding: 9
+                                }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                                        <strong style={{ color: "#92400e" }}>Code change needs approval</strong>
+                                        <span style={{ color: "#92400e", fontVariantNumeric: "tabular-nums" }}>
+                                            {acceptedCount}/{required.length}
+                                        </span>
+                                    </div>
+                                    <div style={{ color: "#4b5563", lineHeight: 1.35 }}>
+                                        <strong>{userLabel(proposal.proposedBy)}</strong> changed code on node <strong>{shortId(proposal.nodeId)}</strong>.
+                                        The shared node will not update until every required user accepts.
+                                    </div>
+                                    {proposal.changeSummary && proposal.changeSummary.length > 0 && (
+                                        <div style={{ marginTop: 7, color: "#344054" }}>
+                                            Changed: <strong>{proposal.changeSummary.join(", ")}</strong>
+                                        </div>
+                                    )}
+                                    {proposedCode && (
+                                        <pre style={{
+                                            marginTop: 7,
+                                            marginBottom: 0,
+                                            maxHeight: 120,
+                                            overflow: "auto",
+                                            background: "#111827",
+                                            color: "#f9fafb",
+                                            borderRadius: 6,
+                                            padding: 7,
+                                            fontSize: 10,
+                                            whiteSpace: "pre-wrap"
+                                        }}>
+                                            {proposedCode}
+                                        </pre>
+                                    )}
+                                    {missing.length > 0 && (
+                                        <div style={{ marginTop: 7, color: "#344054" }}>
+                                            Waiting for: <strong>{missing.map((uid) => allUserNames.get(uid) || shortId(uid)).join(", ")}</strong>
+                                        </div>
+                                    )}
+                                    {Object.values(comments).length > 0 && (
+                                        <div style={{ marginTop: 7, color: "#344054", display: "flex", flexDirection: "column", gap: 4 }}>
+                                            {Object.values(comments).map((entry: any) => (
+                                                <div key={entry.user?.userId || entry.timestamp}>
+                                                    <strong>{userLabel(entry.user)}:</strong> {entry.comment || "No comment"}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {needsMyDecision ? (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 9 }}>
+                                            <textarea
+                                                value={myComment}
+                                                onChange={(event) => setProposalComments((prev) => ({
+                                                    ...prev,
+                                                    [proposal.proposalId]: event.target.value
+                                                }))}
+                                                placeholder="Comment if you do not accept this code change"
+                                                style={{
+                                                    width: "100%",
+                                                    minHeight: 46,
+                                                    resize: "vertical",
+                                                    border: "1px solid #fbbf24",
+                                                    borderRadius: 6,
+                                                    padding: 6,
+                                                    fontSize: 11
+                                                }}
+                                            />
+                                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                                <button
+                                                    onClick={() => approveCodeChange(proposal.proposalId)}
+                                                    disabled={myApproved}
+                                                    style={{
+                                                        ...buttonStyle,
+                                                        padding: "4px 8px",
+                                                        fontSize: 11,
+                                                        opacity: myApproved ? 0.55 : 1
+                                                    }}
+                                                >
+                                                    {myApproved ? "Accepted" : "Accept code"}
+                                                </button>
+                                                <button
+                                                    onClick={() => rejectCodeChange(proposal.proposalId, myComment)}
+                                                    style={{ ...buttonStyle, padding: "4px 8px", fontSize: 11, backgroundColor: "#b45309" }}
+                                                >
+                                                    Comment / do not accept
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div style={{ marginTop: 7, color: "#667085" }}>
+                                            {proposal.proposedBy?.userId === myUserId
+                                                ? "Waiting for other users to accept your code change."
+                                                : "You are not required for this approval."}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
 
                 {conflicts.length > 0 && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
