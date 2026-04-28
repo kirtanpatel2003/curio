@@ -58,7 +58,7 @@ function UniversalBox({ data, isConnectable }: { data: any; isConnectable: boole
           fontSize: 10, padding: '1px 6px', borderRadius: 4,
           zIndex: 10, pointerEvents: 'none', whiteSpace: 'nowrap',
         }}>
-          Editing…
+          Editing: {lockInfo.name || lockInfo.userId.slice(0, 6)}
         </div>
       )}
       {allHandles.map((h: HandleDef) => {

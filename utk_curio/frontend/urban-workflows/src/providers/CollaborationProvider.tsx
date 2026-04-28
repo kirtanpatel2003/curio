@@ -10,50 +10,90 @@ import React, {
 import { io, Socket } from 'socket.io-client';
 import { v4 as uuidv4 } from 'uuid';
 import { useFlowContext } from './FlowProvider';
+import { PythonInterpreter } from '../PythonInterpreter';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface CollabUser {
   userId: string;
   color: string;
+  name?: string;
 }
 
 export interface LockInfo {
   userId: string;
   color: string;
+  name?: string;
 }
 
 export interface Conflict {
-  nodeId: string;
-  lockedBy: LockInfo;
-  requestedBy: LockInfo;
+  conflictId: string;
+  type: string;
+  message?: string;
+  entityId?: string;
+  nodeId?: string;
+  edgeId?: string;
+  operation?: string;
+  actor?: CollabUser;
+  lockedBy?: LockInfo;
+  requestedBy?: LockInfo;
+  currentOwner?: CollabUser;
+  deletedBy?: CollabUser;
+  baseRevision?: number;
+  serverRevision?: number;
+  incomingNode?: any;
+  currentNode?: any;
+  incomingEdge?: any;
+  currentEdge?: any;
+  affectedNodeIds?: string[];
+  changeSummary?: string[];
   timestamp: number;
 }
+
+export interface ActivityItem {
+  id: string;
+  kind: string;
+  label: string;
+  entityId?: string;
+  timestamp: number;
+  user: CollabUser;
+  details?: any;
+}
+
+export type ConflictResolutionAction = 'keep_mine' | 'accept_other' | 'manual' | 'cancel';
 
 interface CollaborationContextProps {
   isConnected: boolean;
   myUserId: string;
+  myUserName: string;
   myColor: string;
   sessionId: string;
   connectedUsers: CollabUser[];
   lockedNodes: Record<string, LockInfo>;
   conflicts: Conflict[];
+  activityLog: ActivityItem[];
+  setUserName: (name: string) => void;
   lockNode: (nodeId: string) => void;
   unlockNode: (nodeId: string) => void;
   dismissConflict: (nodeId: string) => void;
+  resolveConflict: (conflict: Conflict, action: ConflictResolutionAction) => void;
 }
 
 const CollaborationContext = createContext<CollaborationContextProps>({
   isConnected: false,
   myUserId: '',
+  myUserName: '',
   myColor: '#3498db',
   sessionId: 'default',
   connectedUsers: [],
   lockedNodes: {},
   conflicts: [],
+  activityLog: [],
+  setUserName: () => {},
   lockNode: () => {},
   unlockNode: () => {},
   dismissConflict: () => {},
+  resolveConflict: () => {},
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -81,10 +121,11 @@ function serializeNode(node: any): any {
   return { ...node, data };
 }
 
-/** Lightweight fingerprint of the node data fields that matter for collaboration. */
-function dataFingerprint(node: any): string {
+/** Lightweight snapshot of the node fields that matter for collaboration. */
+function nodeFingerprintPayload(node: any): Record<string, any> {
   const d = node.data || {};
-  return JSON.stringify({
+  return {
+    position: node.position,
     input: d.input,
     source: d.source,
     defaultCode: d.defaultCode,
@@ -92,40 +133,87 @@ function dataFingerprint(node: any): string {
     code: d.code,
     outputCode: d.output?.code,
     outputContent: d.output?.content,
-  });
+  };
+}
+
+function dataFingerprint(node: any): string {
+  return JSON.stringify(nodeFingerprintPayload(node));
+}
+
+function summarizeNodeChange(previousFingerprint: string | undefined, node: any): string[] {
+  if (!previousFingerprint) return ['node'];
+  try {
+    const previous = JSON.parse(previousFingerprint);
+    const current = nodeFingerprintPayload(node);
+    const labels: Record<string, string> = {
+      position: 'position',
+      input: 'input',
+      source: 'source',
+      defaultCode: 'default code',
+      content: 'content',
+      code: 'code',
+      outputCode: 'output code',
+      outputContent: 'output',
+    };
+    return Object.keys(labels).filter((key) =>
+      JSON.stringify(previous[key]) !== JSON.stringify(current[key])
+    ).map((key) => labels[key]);
+  } catch (_) {
+    return ['node'];
+  }
 }
 
 function getOrCreateUserId(): string {
-  const key = 'curio_collab_userId';
-  let id = localStorage.getItem(key);
+  const key = 'curio_collab_connectionId';
+  let id = sessionStorage.getItem(key);
   if (!id) {
     id = uuidv4();
-    localStorage.setItem(key, id);
+    sessionStorage.setItem(key, id);
   }
   return id;
+}
+
+function getInitialUserName(userId: string): string {
+  return localStorage.getItem('curio_collab_userName') || `Analyst ${userId.slice(0, 4)}`;
 }
 
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 const CollaborationProvider = ({ children }: { children: ReactNode }) => {
-  const { nodes, edges, setNodes, setEdges, outputs, setOutputs, workflowNameRef } = useFlowContext();
+  const {
+    nodes,
+    edges,
+    setNodes,
+    setEdges,
+    outputs,
+    setOutputs,
+    setInteractions,
+    applyNewOutput,
+    applyNewPropagation,
+    workflowNameRef,
+  } = useFlowContext();
 
   const socketRef = useRef<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
 
   const myUserId = useRef(getOrCreateUserId()).current;
+  const [myUserName, setMyUserName] = useState(getInitialUserName(myUserId));
   const [myColor, setMyColor] = useState('#3498db');
 
   const [connectedUsers, setConnectedUsers] = useState<CollabUser[]>([]);
   const [lockedNodes, setLockedNodes] = useState<Record<string, LockInfo>>({});
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
+  const [activityLog, setActivityLog] = useState<ActivityItem[]>([]);
 
   // Track previous node/edge id-sets to diff local changes
   const prevNodeIds = useRef<Set<string>>(new Set());
   const prevEdgeIds = useRef<Set<string>>(new Set());
+  const prevEdgeSnapshots = useRef<Map<string, any>>(new Map());
 
   // Track node data fingerprints to detect content changes
   const prevNodeData = useRef<Map<string, string>>(new Map());
+  const nodeRevisions = useRef<Map<string, number>>(new Map());
+  const edgeRevisions = useRef<Map<string, number>>(new Map());
 
   // Ids added/removed/updated by remote events — skip re-emitting them
   const remoteNodeAdds = useRef<Set<string>>(new Set());
@@ -134,6 +222,46 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
   const remoteEdgeAdds = useRef<Set<string>>(new Set());
   const remoteEdgeRemoves = useRef<Set<string>>(new Set());
   const remoteOutputUpdates = useRef<Set<string>>(new Set());
+  const pythonInterpreter = useRef(new PythonInterpreter()).current;
+
+  const outputCallback = useCallback((nodeId: string, output: any) => {
+    applyNewOutput({ nodeId, output });
+  }, [applyNewOutput]);
+
+  const interactionsCallback = useCallback((interactions: any, nodeId: string) => {
+    setInteractions((prevInteractions: any[]) => {
+      let newNode = true;
+      const nextInteractions = prevInteractions.map((interaction: any) => {
+        if (interaction.nodeId === nodeId) {
+          newNode = false;
+          return { nodeId, details: interactions, priority: 1 };
+        }
+        return { ...interaction, priority: 0 };
+      });
+
+      if (newNode) nextInteractions.push({ nodeId, details: interactions, priority: 1 });
+      return nextInteractions;
+    });
+  }, [setInteractions]);
+
+  const hydrateNodeForRuntime = useCallback((node: any, existingNode?: any) => {
+    const remoteData = { ...(node.data || {}) };
+    SKIP_DATA_FIELDS.forEach((field) => delete remoteData[field]);
+    const existingData = existingNode?.data || {};
+
+    return {
+      ...node,
+      data: {
+        ...existingData,
+        ...remoteData,
+        nodeId: remoteData.nodeId || existingData.nodeId || node.id,
+        pythonInterpreter: existingData.pythonInterpreter || pythonInterpreter,
+        outputCallback: existingData.outputCallback || outputCallback,
+        interactionsCallback: existingData.interactionsCallback || interactionsCallback,
+        propagationCallback: existingData.propagationCallback || applyNewPropagation,
+      },
+    };
+  }, [applyNewPropagation, interactionsCallback, outputCallback, pythonInterpreter]);
 
   // Keep refs so socket handlers can read the latest values
   const outputsRef = useRef(outputs);
@@ -149,20 +277,25 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
   // ── Socket setup ────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const socket = io(BACKEND_URL, { transports: ['websocket', 'polling'] });
+    const socket = io(BACKEND_URL, { transports: ['polling', 'websocket'] });
     socketRef.current = socket;
 
     socket.on('connect', () => {
       setIsConnected(true);
-      socket.emit('join_session', { sessionId, userId: myUserId });
+      socket.emit('join_session', { sessionId, userId: myUserId, userName: myUserName });
     });
 
     socket.on('disconnect', () => setIsConnected(false));
 
     socket.on('session_state', (data: any) => {
       setMyColor(data.color);
+      if (data.name) setMyUserName(data.name);
       setLockedNodes(data.lockedNodes || {});
       setConnectedUsers(data.connectedUsers || []);
+      setActivityLog(data.activityLog || []);
+
+      nodeRevisions.current = new Map(Object.entries(data.nodeRevisions || {}).map(([id, rev]) => [id, Number(rev)]));
+      edgeRevisions.current = new Map(Object.entries(data.edgeRevisions || {}).map(([id, rev]) => [id, Number(rev)]));
 
       // Populate outputs[] from server-synced outputs
       const remoteOutputs: Record<string, any> = data.outputs || {};
@@ -186,11 +319,7 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
           const existingIds = new Set(prev.map((n) => n.id));
           const safeNodes = remoteNodes
             .filter((n) => !existingIds.has(n.id))
-            .map((n) => {
-              const safeData = { ...n.data };
-              SKIP_DATA_FIELDS.forEach((f) => delete safeData[f]);
-              return { ...n, data: safeData };
-            });
+            .map((n) => hydrateNodeForRuntime(n));
           return [...prev, ...safeNodes];
         });
       }
@@ -214,27 +343,51 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
       setConnectedUsers((prev) => prev.filter((u) => u.userId !== data.userId));
     });
 
+    socket.on('user_updated', (data: CollabUser) => {
+      if (data.userId === myUserId) {
+        if (data.name) setMyUserName(data.name);
+        if (data.color) setMyColor(data.color);
+      }
+      setConnectedUsers((prev) => prev.map((u) => u.userId === data.userId ? { ...u, ...data } : u));
+    });
+
+    socket.on('state_ack', (data: any) => {
+      if (data.entity === 'node') {
+        nodeRevisions.current.set(data.id, Number(data.revision || 0));
+      } else if (data.entity === 'edge') {
+        edgeRevisions.current.set(data.id, Number(data.revision || 0));
+      }
+    });
+
+    socket.on('activity_recorded', (activity: ActivityItem) => {
+      setActivityLog((prev) => [activity, ...prev.filter((item) => item.id !== activity.id)].slice(0, 50));
+    });
+
+    socket.on('conflict_resolved', (data: { conflictId: string }) => {
+      setConflicts((prev) => prev.filter((c) => c.conflictId !== data.conflictId));
+    });
+
     // ── Remote graph changes ──────────────────────────────────────────────
 
     socket.on('node_added', (data: any) => {
       const node = data.node;
+      if (data.revision !== undefined) nodeRevisions.current.set(node.id, Number(data.revision));
       remoteNodeAdds.current.add(node.id);
       setNodes((prev: any[]) => {
         if (prev.some((n) => n.id === node.id)) return prev;
-        // Strip any corrupted class fields that lost their prototype during JSON transit
-        const safeData = { ...node.data };
-        SKIP_DATA_FIELDS.forEach((f) => delete safeData[f]);
-        return [...prev, { ...node, data: safeData }];
+        return [...prev, hydrateNodeForRuntime(node)];
       });
     });
 
     socket.on('node_removed', (data: { nodeId: string }) => {
+      nodeRevisions.current.set(data.nodeId, Number((data as any).revision || nodeRevisions.current.get(data.nodeId) || 0));
       remoteNodeRemoves.current.add(data.nodeId);
       setNodes((prev: any[]) => prev.filter((n) => n.id !== data.nodeId));
     });
 
     socket.on('edge_added', (data: any) => {
       const edge = data.edge;
+      if (data.revision !== undefined) edgeRevisions.current.set(edge.id, Number(data.revision));
       remoteEdgeAdds.current.add(edge.id);
       setEdges((prev: any[]) => {
         if (prev.some((e) => e.id === edge.id)) return prev;
@@ -255,18 +408,18 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
     });
 
     socket.on('edge_removed', (data: { edgeId: string }) => {
+      edgeRevisions.current.set(data.edgeId, Number((data as any).revision || edgeRevisions.current.get(data.edgeId) || 0));
       remoteEdgeRemoves.current.add(data.edgeId);
       setEdges((prev: any[]) => prev.filter((e) => e.id !== data.edgeId));
     });
 
     socket.on('node_updated', (data: any) => {
       const node = data.node;
+      if (data.revision !== undefined) nodeRevisions.current.set(node.id, Number(data.revision));
       remoteNodeUpdates.current.add(node.id);
       setNodes((prev: any[]) => prev.map((n) => {
         if (n.id !== node.id) return n;
-        const remoteData = { ...node.data };
-        SKIP_DATA_FIELDS.forEach((f) => delete remoteData[f]);
-        return { ...n, data: { ...n.data, ...remoteData } };
+        return hydrateNodeForRuntime(node, n);
       }));
     });
 
@@ -299,10 +452,10 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
 
     // ── Lock events ───────────────────────────────────────────────────────
 
-    socket.on('node_locked', (data: { nodeId: string; userId: string; color: string }) => {
+    socket.on('node_locked', (data: { nodeId: string; userId: string; color: string; name?: string }) => {
       setLockedNodes((prev) => ({
         ...prev,
-        [data.nodeId]: { userId: data.userId, color: data.color },
+        [data.nodeId]: { userId: data.userId, color: data.color, name: data.name },
       }));
     });
 
@@ -315,7 +468,11 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
     });
 
     socket.on('conflict_detected', (data: any) => {
-      setConflicts((prev) => [...prev, { ...data, timestamp: Date.now() }]);
+      const conflictId = data.conflictId || `${data.type || 'conflict'}-${data.nodeId || data.edgeId || Date.now()}`;
+      setConflicts((prev) => {
+        if (prev.some((c) => c.conflictId === conflictId)) return prev;
+        return [...prev, { ...data, conflictId, timestamp: data.timestamp || Date.now() }];
+      });
     });
 
     return () => {
@@ -335,7 +492,12 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
         if (remoteNodeAdds.current.has(node.id)) {
           remoteNodeAdds.current.delete(node.id);
         } else {
-          socketRef.current?.emit('node_added', { sessionId, userId: myUserId, node: serializeNode(node) });
+          socketRef.current?.emit('node_added', {
+            sessionId,
+            userId: myUserId,
+            userName: myUserName,
+            node: serializeNode(node),
+          });
         }
         // Seed data fingerprint for this new node
         prevNodeData.current.set(node.id, dataFingerprint(node));
@@ -347,7 +509,14 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
           if (remoteNodeUpdates.current.has(node.id)) {
             remoteNodeUpdates.current.delete(node.id);
           } else {
-            socketRef.current?.emit('node_updated', { sessionId, userId: myUserId, node: serializeNode(node) });
+            socketRef.current?.emit('node_updated', {
+              sessionId,
+              userId: myUserId,
+              userName: myUserName,
+              node: serializeNode(node),
+              baseRevision: nodeRevisions.current.get(node.id) || 0,
+              changeSummary: summarizeNodeChange(prevFp, node),
+            });
           }
           prevNodeData.current.set(node.id, fp);
         }
@@ -360,7 +529,13 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
         if (remoteNodeRemoves.current.has(id)) {
           remoteNodeRemoves.current.delete(id);
         } else {
-          socketRef.current?.emit('node_removed', { sessionId, userId: myUserId, nodeId: id });
+          socketRef.current?.emit('node_removed', {
+            sessionId,
+            userId: myUserId,
+            userName: myUserName,
+            nodeId: id,
+            baseRevision: nodeRevisions.current.get(id) || 0,
+          });
         }
       }
     }
@@ -378,9 +553,15 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
         if (remoteEdgeAdds.current.has(edge.id)) {
           remoteEdgeAdds.current.delete(edge.id);
         } else {
-          socketRef.current?.emit('edge_added', { sessionId, userId: myUserId, edge });
+          socketRef.current?.emit('edge_added', {
+            sessionId,
+            userId: myUserId,
+            userName: myUserName,
+            edge,
+          });
         }
       }
+      prevEdgeSnapshots.current.set(edge.id, edge);
     }
 
     for (const id of prevEdgeIds.current) {
@@ -388,8 +569,18 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
         if (remoteEdgeRemoves.current.has(id)) {
           remoteEdgeRemoves.current.delete(id);
         } else {
-          socketRef.current?.emit('edge_removed', { sessionId, userId: myUserId, edgeId: id });
+          const previousEdge = prevEdgeSnapshots.current.get(id);
+          socketRef.current?.emit('edge_removed', {
+            sessionId,
+            userId: myUserId,
+            userName: myUserName,
+            edgeId: id,
+            source: previousEdge?.source,
+            target: previousEdge?.target,
+            baseRevision: edgeRevisions.current.get(id) || 0,
+          });
         }
+        prevEdgeSnapshots.current.delete(id);
       }
     }
 
@@ -408,7 +599,13 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
       if (remoteOutputUpdates.current.has(entry.nodeId)) {
         remoteOutputUpdates.current.delete(entry.nodeId);
       } else {
-        socketRef.current?.emit('output_produced', { sessionId, userId: myUserId, nodeId: entry.nodeId, output: entry.output });
+        socketRef.current?.emit('output_produced', {
+          sessionId,
+          userId: myUserId,
+          userName: myUserName,
+          nodeId: entry.nodeId,
+          output: entry.output,
+        });
       }
     }
   }, [outputs]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -416,31 +613,99 @@ const CollaborationProvider = ({ children }: { children: ReactNode }) => {
   // ── Lock API ────────────────────────────────────────────────────────────
 
   const lockNode = useCallback((nodeId: string) => {
-    setLockedNodes((prev) => ({ ...prev, [nodeId]: { userId: myUserId, color: myColor } }));
-    socketRef.current?.emit('node_lock', { sessionId, userId: myUserId, nodeId });
-  }, [myUserId, myColor, sessionId]);
+    setLockedNodes((prev) => ({ ...prev, [nodeId]: { userId: myUserId, color: myColor, name: myUserName } }));
+    socketRef.current?.emit('node_lock', { sessionId, userId: myUserId, userName: myUserName, nodeId });
+  }, [myUserId, myColor, myUserName, sessionId]);
 
   const unlockNode = useCallback((nodeId: string) => {
     setLockedNodes((prev) => { const n = { ...prev }; delete n[nodeId]; return n; });
-    socketRef.current?.emit('node_unlock', { sessionId, userId: myUserId, nodeId });
-  }, [myUserId, sessionId]);
+    socketRef.current?.emit('node_unlock', { sessionId, userId: myUserId, userName: myUserName, nodeId });
+  }, [myUserId, myUserName, sessionId]);
 
   const dismissConflict = useCallback((nodeId: string) => {
-    setConflicts((prev) => prev.filter((c) => c.nodeId !== nodeId));
+    setConflicts((prev) => prev.filter((c) => c.nodeId !== nodeId && c.conflictId !== nodeId));
   }, []);
+
+  const setUserName = useCallback((name: string) => {
+    const nextName = name.trim().slice(0, 40) || `Analyst ${myUserId.slice(0, 4)}`;
+    localStorage.setItem('curio_collab_userName', nextName);
+    setMyUserName(nextName);
+    socketRef.current?.emit('set_user_profile', { sessionId, userId: myUserId, userName: nextName });
+  }, [myUserId, sessionId]);
+
+  const applyServerVersion = useCallback((conflict: Conflict) => {
+    const operation = conflict.operation;
+
+    if (operation === 'node_updated') {
+      if (conflict.currentNode) {
+        remoteNodeUpdates.current.add(conflict.currentNode.id);
+        setNodes((prev: any[]) => prev.map((n) =>
+          n.id === conflict.currentNode.id ? hydrateNodeForRuntime(conflict.currentNode, n) : n
+        ));
+        if (conflict.serverRevision !== undefined) {
+          nodeRevisions.current.set(conflict.currentNode.id, Number(conflict.serverRevision));
+        }
+      } else if (conflict.nodeId) {
+        remoteNodeRemoves.current.add(conflict.nodeId);
+        setNodes((prev: any[]) => prev.filter((n) => n.id !== conflict.nodeId));
+      }
+    } else if (operation === 'node_removed') {
+      if (conflict.currentNode) {
+        remoteNodeAdds.current.add(conflict.currentNode.id);
+        remoteNodeUpdates.current.add(conflict.currentNode.id);
+        setNodes((prev: any[]) => {
+          if (prev.some((n) => n.id === conflict.currentNode.id)) {
+            return prev.map((n) => n.id === conflict.currentNode.id ? hydrateNodeForRuntime(conflict.currentNode, n) : n);
+          }
+          return [...prev, hydrateNodeForRuntime(conflict.currentNode)];
+        });
+      }
+    } else if (operation === 'edge_removed') {
+      if (conflict.currentEdge) {
+        remoteEdgeAdds.current.add(conflict.currentEdge.id);
+        setEdges((prev: any[]) => {
+          if (prev.some((e) => e.id === conflict.currentEdge.id)) return prev;
+          return [...prev, conflict.currentEdge];
+        });
+      }
+    } else if (operation === 'edge_added') {
+      if (conflict.incomingEdge) {
+        remoteEdgeRemoves.current.add(conflict.incomingEdge.id);
+        setEdges((prev: any[]) => prev.filter((e) => e.id !== conflict.incomingEdge.id));
+      }
+    }
+  }, [hydrateNodeForRuntime, setEdges, setNodes]);
+
+  const resolveConflict = useCallback((conflict: Conflict, action: ConflictResolutionAction) => {
+    if (action !== 'keep_mine') {
+      applyServerVersion(conflict);
+    }
+    setConflicts((prev) => prev.filter((c) => c.conflictId !== conflict.conflictId));
+    socketRef.current?.emit('resolve_conflict', {
+      sessionId,
+      userId: myUserId,
+      userName: myUserName,
+      action,
+      conflict,
+    });
+  }, [applyServerVersion, myUserId, myUserName, sessionId]);
 
   return (
     <CollaborationContext.Provider value={{
       isConnected,
       myUserId,
+      myUserName,
       myColor,
       sessionId,
       connectedUsers,
       lockedNodes,
       conflicts,
+      activityLog,
+      setUserName,
       lockNode,
       unlockNode,
       dismissConflict,
+      resolveConflict,
     }}>
       {children}
     </CollaborationContext.Provider>

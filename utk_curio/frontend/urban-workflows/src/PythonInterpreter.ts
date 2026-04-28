@@ -44,21 +44,27 @@ export class PythonInterpreter {
                 "Content-type": "application/json; charset=UTF-8",
             },
         })
-            .then((response) => response.json())
+            .then(async (response) => {
+                const json = await response.json();
+                if (!response.ok) {
+                    throw new Error(json?.error || json?.stderr || response.statusText);
+                }
+                return json;
+            })
             .then((json) => {
                 let endTime = formatDate(new Date());
 
                 let typesInput: string[] = [];
                 // console.log("------------ inputTypes", json.inputTypes)
                 // console.log("------------", json)
-                if (input != "") typesInput = json.input.dataType;//getType([input]);
+                if (input != "" && json.input?.dataType) typesInput = json.input.dataType;//getType([input]);
 
                 let typesOuput: string[] = [];
 
-                if (json.output != "") {
+                if (json.output != "" && json.output != null) {
                     if (json.stderr != "") {
                         typesOuput = ["error"];
-                    } else {
+                    } else if (json.output?.dataType) {
                         typesOuput = json.output.dataType;// getType([json.output]);
                     }
                 }
@@ -94,6 +100,13 @@ export class PythonInterpreter {
                 // })
 
                 callback(json);
+            })
+            .catch((error) => {
+                callback({
+                    stdout: "",
+                    stderr: error instanceof Error ? error.message : String(error),
+                    output: null,
+                });
             });
     }
 }

@@ -63,9 +63,13 @@ function CodeEditor({
     }, [code]);
 
     const processExecutionResult = (result: any) => {
+        const stdout = typeof result?.stdout === "string" ? result.stdout : "";
+        const stderr = typeof result?.stderr === "string" ? result.stderr : "";
+        const savedPath = result?.output?.path;
+
         let outputContent = "";
-        outputContent += "stdout:\n"+result.stdout.slice(0, 100);
-        outputContent += "\nstderr:\n"+result.stderr;
+        outputContent += "stdout:\n" + stdout.slice(0, 100);
+        outputContent += "\nstderr:\n" + stderr;
 
         // outputContent += "\nnode output:\n";
         // if (outputContent.length > 100) {
@@ -75,15 +79,16 @@ function CodeEditor({
         //     outputContent += result.codeOut;
         // }
 
-        outputContent += "\nSaved to file: "+result.output.path;
+        if (savedPath) {
+            outputContent += "\nSaved to file: " + savedPath;
+        }
 
-        setOutputCallback({ code: "success", content: outputContent });
-
-        if (result.stderr == "") {
+        if (stderr == "") {
+            setOutputCallback({ code: "success", content: outputContent });
             // No error in the execution
-            if (typeof data.outputCallback === 'function') data.outputCallback(data.nodeId, result.output);
+            if (typeof data?.outputCallback === 'function') data.outputCallback(data.nodeId, result.output);
         } else {
-            setOutputCallback({ code: "error", content: result.stderr });
+            setOutputCallback({ code: "error", content: stderr });
         }
     };
 
@@ -96,6 +101,14 @@ function CodeEditor({
         ) {
             // the code was executing and not only resolving widgets
             // console.log(data);
+            if (typeof data?.pythonInterpreter?.interpretCode !== "function") {
+                setOutputCallback({
+                    code: "error",
+                    content: "Python interpreter is not available for this node. Try refreshing the workflow or re-adding the node.",
+                });
+                return;
+            }
+
             data.pythonInterpreter.interpretCode(
                 code,
                 replacedCode,

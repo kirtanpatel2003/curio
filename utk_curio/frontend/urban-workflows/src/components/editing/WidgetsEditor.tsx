@@ -81,7 +81,7 @@ function WidgetsEditor({
             setUploadResult({ success: false, message: "Please select a file first", savedPath: null });
             return;
         }
-        if (!data || !data.pythonInterpreter) {
+        if (typeof data?.pythonInterpreter?.interpretCode !== "function") {
             setUploadResult({ success: false, message: "Python interpreter not available", savedPath: null });
             return;
         }

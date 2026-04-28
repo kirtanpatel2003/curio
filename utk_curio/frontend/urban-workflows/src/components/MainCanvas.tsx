@@ -284,7 +284,43 @@ export function MainCanvas() {
             </div>
     }
 
-    const { isConnected, connectedUsers, conflicts, dismissConflict } = useCollaborationContext();
+    const {
+        isConnected,
+        connectedUsers,
+        conflicts,
+        activityLog,
+        dismissConflict,
+        resolveConflict,
+        myUserId,
+        myUserName,
+        myColor,
+        setUserName
+    } = useCollaborationContext();
+    const [nameDraft, setNameDraft] = useState(myUserName);
+
+    useEffect(() => {
+        setNameDraft(myUserName);
+    }, [myUserName]);
+
+    const shortId = (id?: string) => id ? id.slice(0, 6) : "unknown";
+    const userLabel = (user?: { name?: string; userId?: string }) =>
+        user?.name || (user?.userId ? `User ${shortId(user.userId)}` : "Unknown user");
+    const formatTime = (timestamp?: number) =>
+        timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+    const conflictTitle = (type: string) => {
+        if (type === "node_edit") return "Concurrent node edit";
+        if (type === "node_delete") return "Node delete conflict";
+        if (type === "node_deleted") return "Deleted node changed";
+        if (type === "edge_dependency") return "Downstream dependency changed";
+        if (type === "edge_deleted") return "Edge already deleted";
+        if (type === "node_lock") return "Node already being edited";
+        return "Collaboration conflict";
+    };
+    const allUsers = [
+        { userId: myUserId, name: myUserName, color: myColor },
+        ...connectedUsers.filter((u) => u.userId !== myUserId)
+    ];
+    const commitUserName = () => setUserName(nameDraft);
 
     return (
         <>
@@ -294,42 +330,185 @@ export function MainCanvas() {
             onClick={closeFileMenu}
             // onWheelCapture={handleWheel}
         >
-            {/* ── Collaboration status bar ───────────────────────────────── */}
             <div style={{
-                position: 'fixed', top: 8, right: 12, zIndex: 1000,
-                display: 'flex', alignItems: 'center', gap: 6,
+                position: "fixed",
+                top: 8,
+                right: 12,
+                zIndex: 1000,
+                width: 340,
+                maxHeight: "calc(100vh - 24px)",
+                overflowY: "auto",
+                background: "rgba(255,255,255,0.96)",
+                border: "1px solid #d9dee7",
+                borderRadius: 8,
+                boxShadow: "0 6px 24px rgba(15,23,42,0.18)",
+                padding: 10,
+                fontSize: 12,
+                color: "#172033"
             }}>
-                <div style={{
-                    width: 8, height: 8, borderRadius: '50%',
-                    background: isConnected ? '#2ecc71' : '#e74c3c',
-                }} title={isConnected ? 'Connected' : 'Disconnected'} />
-                {connectedUsers.map((u) => (
-                    <div key={u.userId} title={`User ${u.userId.slice(0, 6)}`} style={{
-                        width: 24, height: 24, borderRadius: '50%',
-                        background: u.color, border: '2px solid #fff',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        color: '#fff', fontSize: 10, fontWeight: 700,
-                    }}>
-                        {u.userId.slice(0, 2).toUpperCase()}
-                    </div>
-                ))}
-            </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <div style={{
+                        width: 9,
+                        height: 9,
+                        borderRadius: "50%",
+                        background: isConnected ? "#2f9e44" : "#c92a2a",
+                        flex: "0 0 auto"
+                    }} title={isConnected ? "Connected" : "Disconnected"} />
+                    <input
+                        value={nameDraft}
+                        onChange={(event) => setNameDraft(event.target.value)}
+                        onBlur={commitUserName}
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                                commitUserName();
+                                (event.currentTarget as HTMLInputElement).blur();
+                            }
+                        }}
+                        style={{
+                            minWidth: 0,
+                            flex: 1,
+                            border: "1px solid #cfd6e4",
+                            borderRadius: 6,
+                            padding: "5px 7px",
+                            fontSize: 12,
+                            fontWeight: 600
+                        }}
+                        aria-label="User name"
+                    />
+                    <span style={{ color: "#667085", fontVariantNumeric: "tabular-nums" }}>
+                        {shortId(myUserId)}
+                    </span>
+                </div>
 
-            {/* ── Conflict banners ───────────────────────────────────────── */}
-            <div style={{ position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {conflicts.map((c) => (
-                    <div key={c.nodeId + c.timestamp} style={{
-                        background: '#e74c3c', color: '#fff', borderRadius: 6,
-                        padding: '8px 14px', display: 'flex', alignItems: 'center', gap: 10,
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.3)', fontSize: 13,
-                    }}>
-                        <span>⚠ Conflict on node — locked by <strong>{c.lockedBy.userId.slice(0, 6)}</strong>, also edited by <strong>{c.requestedBy.userId.slice(0, 6)}</strong></span>
-                        <button onClick={() => dismissConflict(c.nodeId)} style={{
-                            background: 'transparent', border: '1px solid #fff',
-                            color: '#fff', borderRadius: 4, cursor: 'pointer', padding: '2px 8px',
-                        }}>✕</button>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: conflicts.length ? 10 : 8 }}>
+                    {allUsers.map((u) => (
+                        <div key={u.userId} title={userLabel(u)} style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 5,
+                            maxWidth: 150,
+                            border: "1px solid #e5e7eb",
+                            borderRadius: 999,
+                            padding: "3px 7px 3px 4px",
+                            background: "#fff"
+                        }}>
+                            <span style={{
+                                width: 18,
+                                height: 18,
+                                borderRadius: "50%",
+                                background: u.color,
+                                color: "#fff",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                fontSize: 9,
+                                fontWeight: 700,
+                                flex: "0 0 auto"
+                            }}>
+                                {(u.name || u.userId).slice(0, 2).toUpperCase()}
+                            </span>
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {u.userId === myUserId ? "You" : userLabel(u)}
+                            </span>
+                        </div>
+                    ))}
+                </div>
+
+                {conflicts.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+                        {conflicts.map((c) => (
+                            <div key={c.conflictId} style={{
+                                border: "1px solid #f1aeb5",
+                                background: "#fff5f5",
+                                borderRadius: 8,
+                                padding: 9
+                            }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                                    <strong style={{ color: "#9f1239" }}>{conflictTitle(c.type)}</strong>
+                                    <button
+                                        onClick={() => dismissConflict(c.conflictId)}
+                                        style={{
+                                            border: "none",
+                                            background: "transparent",
+                                            color: "#9f1239",
+                                            cursor: "pointer",
+                                            fontWeight: 700
+                                        }}
+                                        aria-label="Dismiss conflict"
+                                    >
+                                        x
+                                    </button>
+                                </div>
+                                <div style={{ color: "#4b5563", lineHeight: 1.35 }}>
+                                    {c.message || "A collaboration conflict needs attention."}
+                                </div>
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 7, color: "#344054" }}>
+                                    <span>By: <strong>{userLabel(c.actor || c.requestedBy)}</strong></span>
+                                    <span>Current: <strong>{userLabel(c.currentOwner || c.lockedBy || c.deletedBy)}</strong></span>
+                                    {c.nodeId && <span>Node: <strong>{shortId(c.nodeId)}</strong></span>}
+                                    {c.edgeId && <span>Edge: <strong>{shortId(c.edgeId)}</strong></span>}
+                                    {c.serverRevision !== undefined && <span>Server rev: <strong>{c.serverRevision}</strong></span>}
+                                    {c.baseRevision !== undefined && <span>My base: <strong>{c.baseRevision}</strong></span>}
+                                </div>
+                                {c.changeSummary && c.changeSummary.length > 0 && (
+                                    <div style={{ marginTop: 7, color: "#344054" }}>
+                                        Changed: <strong>{c.changeSummary.join(", ")}</strong>
+                                    </div>
+                                )}
+                                {c.affectedNodeIds && c.affectedNodeIds.length > 0 && (
+                                    <div style={{ marginTop: 7, color: "#344054" }}>
+                                        Affects: <strong>{c.affectedNodeIds.map(shortId).join(", ")}</strong>
+                                    </div>
+                                )}
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 9 }}>
+                                    <button onClick={() => resolveConflict(c, "keep_mine")} style={{ ...buttonStyle, padding: "4px 8px", fontSize: 11 }}>
+                                        Keep mine
+                                    </button>
+                                    <button onClick={() => resolveConflict(c, "accept_other")} style={{ ...buttonStyle, padding: "4px 8px", fontSize: 11, backgroundColor: "#475467" }}>
+                                        Accept other
+                                    </button>
+                                    <button onClick={() => resolveConflict(c, "manual")} style={{ ...buttonStyle, padding: "4px 8px", fontSize: 11, backgroundColor: "#7c3aed" }}>
+                                        Manual
+                                    </button>
+                                    <button onClick={() => resolveConflict(c, "cancel")} style={{ ...buttonStyle, padding: "4px 8px", fontSize: 11, backgroundColor: "#b42318" }}>
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
                     </div>
-                ))}
+                )}
+
+                <div>
+                    <div style={{ fontWeight: 700, marginBottom: 5 }}>Activity</div>
+                    {activityLog.length === 0 ? (
+                        <div style={{ color: "#667085" }}>No recent activity</div>
+                    ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                            {activityLog.slice(0, 8).map((item) => (
+                                <div key={item.id} style={{
+                                    display: "grid",
+                                    gridTemplateColumns: "auto 1fr auto",
+                                    alignItems: "center",
+                                    gap: 6,
+                                    borderTop: "1px solid #eef2f7",
+                                    paddingTop: 5
+                                }}>
+                                    <span style={{
+                                        width: 8,
+                                        height: 8,
+                                        borderRadius: "50%",
+                                        background: item.user?.color || "#98a2b3"
+                                    }} />
+                                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                        <strong>{userLabel(item.user)}</strong> {item.label.replace(userLabel(item.user), "").trim()}
+                                    </span>
+                                    <span style={{ color: "#667085", fontVariantNumeric: "tabular-nums" }}>{formatTime(item.timestamp)}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
             </div>
 
             {Object.keys(floatingBoxes).map((key, index) => (

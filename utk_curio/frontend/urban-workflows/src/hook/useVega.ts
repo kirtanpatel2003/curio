@@ -153,7 +153,7 @@ export const useVega = ({ data, code }: { data: any; code: string; }) => {
   // Maping interaction
   useEffect(() => {
     if (Object.keys(interactionsRef.current).length > 0) {
-      if (interactionsRef.current.highlight.type != "UNDETERMINED") {
+      if (interactionsRef.current.highlight && interactionsRef.current.highlight.type != "UNDETERMINED") {
         let int_time = formatDate(new Date());
 
         fetch(`${process.env.BACKEND_URL}/insert_interaction`, {
